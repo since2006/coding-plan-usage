@@ -55,23 +55,6 @@ jobs:
             go build -trimpath -ldflags="-s -w" \
             -o dist/coding-plan-usage ./cmd/coding-plan-usage
 
-      - name: 检查部署配置
-        shell: bash
-        env:
-          DEPLOY_HOST: ${{ secrets.DEPLOY_HOST }}
-          DEPLOY_USER: ${{ secrets.DEPLOY_USER }}
-          DEPLOY_PASSWORD: ${{ secrets.DEPLOY_PASSWORD }}
-          DEPLOY_FINGERPRINT: ${{ secrets.DEPLOY_FINGERPRINT }}
-        run: |
-          set -euo pipefail
-
-          for name in DEPLOY_HOST DEPLOY_USER DEPLOY_PASSWORD DEPLOY_FINGERPRINT; do
-            if [[ -z "${!name}" ]]; then
-              echo "::error::必须配置 $name Secret"
-              exit 1
-            fi
-          done
-
       - name: SCP 上传二进制
         uses: appleboy/scp-action@v1.0.0
         with:
@@ -79,7 +62,6 @@ jobs:
           username: ${{ secrets.DEPLOY_USER }}
           password: ${{ secrets.DEPLOY_PASSWORD }}
           port: ${{ secrets.DEPLOY_PORT || '22' }}
-          fingerprint: ${{ secrets.DEPLOY_FINGERPRINT }}
           source: dist/coding-plan-usage
           target: /tmp/coding-plan-usage-${{ github.sha }}-${{ github.run_attempt }}
           strip_components: 1
@@ -95,25 +77,9 @@ jobs:
           username: ${{ secrets.DEPLOY_USER }}
           password: ${{ secrets.DEPLOY_PASSWORD }}
           port: ${{ secrets.DEPLOY_PORT || '22' }}
-          fingerprint: ${{ secrets.DEPLOY_FINGERPRINT }}
           envs: STAGING_DIR,DEPLOY_PATH,DEPLOY_SERVICE
           script: |
-            set -eu
-
-            case "$STAGING_DIR" in
-              /tmp/coding-plan-usage-*) ;;
-              *) echo "临时目录格式不正确" >&2; exit 1 ;;
-            esac
-            case "$DEPLOY_PATH" in
-              /*) ;;
-              *) echo "DEPLOY_PATH 必须是绝对路径" >&2; exit 1 ;;
-            esac
-            case "$DEPLOY_PATH" in
-              *[!A-Za-z0-9._/-]*) echo "DEPLOY_PATH 格式不正确" >&2; exit 1 ;;
-            esac
-            case "$DEPLOY_SERVICE" in
-              ''|*[!A-Za-z0-9_.@-]*) echo "DEPLOY_SERVICE 格式不正确" >&2; exit 1 ;;
-            esac
+            set -e
 
             staging_path="$STAGING_DIR/coding-plan-usage"
             next_path="${DEPLOY_PATH}.new"
@@ -123,16 +89,6 @@ jobs:
               rmdir "$STAGING_DIR" 2>/dev/null || true
             }
             trap cleanup EXIT
-
-            deploy_dir=$(dirname "$DEPLOY_PATH")
-            if [ ! -d "$deploy_dir" ]; then
-              echo "部署目录不存在：$deploy_dir" >&2
-              exit 1
-            fi
-            if [ ! -f "$staging_path" ]; then
-              echo "待部署二进制不存在：$staging_path" >&2
-              exit 1
-            fi
 
             sudo -n install -m 0755 "$staging_path" "$next_path"
             sudo -n mv -f "$next_path" "$DEPLOY_PATH"

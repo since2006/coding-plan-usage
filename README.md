@@ -114,7 +114,6 @@ go build -o coding-plan-usage ./cmd/coding-plan-usage
 - `DEPLOY_HOST`：服务器域名或 IPv4 地址
 - `DEPLOY_USER`：SSH 登录用户
 - `DEPLOY_PASSWORD`：SSH 登录密码
-- `DEPLOY_FINGERPRINT`：已经核验的服务器 SSH 公钥 SHA256 指纹，例如 `SHA256:...`
 - `DEPLOY_PORT`：可选，SSH 端口，默认 `22`
 
 可选的 Actions Variables：
@@ -123,11 +122,7 @@ go build -o coding-plan-usage ./cmd/coding-plan-usage
 - `DEPLOY_SERVICE`：systemd 服务名，默认 `coding-plan-usage.service`
 - `DEPLOY_GOARCH`：服务器架构，支持 `amd64`（默认）或 `arm64`
 
-服务器必须启用 SSH 密码认证，并预先安装、启用对应的 systemd 服务和 `config.yaml`。部署用户必须可以通过无密码 `sudo` 执行 `install`、`mv` 和 `systemctl`；SSH 登录密码不会被用于 `sudo`，权限不足时工作流会直接失败。可以用下面的命令读取服务器 Ed25519 公钥指纹，将输出中的 `SHA256:...` 配置为 `DEPLOY_FINGERPRINT`；设置前仍应通过可信渠道核验：
-
-```bash
-ssh-keyscan -p 22 -t ed25519 your-server.example.com 2>/dev/null | ssh-keygen -lf -
-```
+服务器必须启用 SSH 密码认证，并预先安装、启用对应的 systemd 服务和 `config.yaml`。部署用户必须可以通过无密码 `sudo` 执行 `install`、`mv` 和 `systemctl`；SSH 登录密码不会被用于 `sudo`，权限不足时工作流会直接失败。
 
 ## Docker Compose
 
