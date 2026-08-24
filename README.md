@@ -107,14 +107,14 @@ go build -o coding-plan-usage ./cmd/coding-plan-usage
 
 ## GitHub Actions 直接部署
 
-`.github/workflows/deploy.yml` 会在代码推送到 `main` 后运行测试和静态检查，交叉编译无 CGO 依赖的 Linux 二进制，通过 SCP 上传到服务器，原子替换目标文件并重启 systemd 服务。也可以在 GitHub Actions 页面手动触发。
+`.github/workflows/deploy.yml` 会在代码推送到 `main` 后运行测试和静态检查，交叉编译无 CGO 依赖的 Linux 二进制，通过 `appleboy/scp-action` 上传到服务器，再由 `appleboy/ssh-action` 原子替换目标文件并重启 systemd 服务。也可以在 GitHub Actions 页面手动触发。
 
 仓库需要配置以下 Actions Secrets：
 
 - `DEPLOY_HOST`：服务器域名或 IPv4 地址
 - `DEPLOY_USER`：SSH 登录用户
 - `DEPLOY_PASSWORD`：SSH 登录密码
-- `DEPLOY_KNOWN_HOSTS`：已经核验指纹的服务器 `known_hosts` 记录
+- `DEPLOY_FINGERPRINT`：已经核验的服务器 SSH 公钥 SHA256 指纹，例如 `SHA256:...`
 - `DEPLOY_PORT`：可选，SSH 端口，默认 `22`
 
 可选的 Actions Variables：
@@ -123,10 +123,10 @@ go build -o coding-plan-usage ./cmd/coding-plan-usage
 - `DEPLOY_SERVICE`：systemd 服务名，默认 `coding-plan-usage.service`
 - `DEPLOY_GOARCH`：服务器架构，支持 `amd64`（默认）或 `arm64`
 
-服务器必须启用 SSH 密码认证，并预先安装、启用对应的 systemd 服务和 `config.yaml`。部署用户必须可以通过无密码 `sudo` 执行 `install`、`mv` 和 `systemctl`；SSH 登录密码不会被用于 `sudo`，权限不足时工作流会直接失败。`DEPLOY_KNOWN_HOSTS` 可用下面的命令生成，但应先通过可信渠道核验服务器主机密钥指纹：
+服务器必须启用 SSH 密码认证，并预先安装、启用对应的 systemd 服务和 `config.yaml`。部署用户必须可以通过无密码 `sudo` 执行 `install`、`mv` 和 `systemctl`；SSH 登录密码不会被用于 `sudo`，权限不足时工作流会直接失败。可以用下面的命令读取服务器 Ed25519 公钥指纹，将输出中的 `SHA256:...` 配置为 `DEPLOY_FINGERPRINT`；设置前仍应通过可信渠道核验：
 
 ```bash
-ssh-keyscan -p 22 your-server.example.com
+ssh-keyscan -p 22 -t ed25519 your-server.example.com 2>/dev/null | ssh-keygen -lf -
 ```
 
 ## Docker Compose

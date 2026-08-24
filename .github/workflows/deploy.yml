@@ -55,97 +55,86 @@ jobs:
             go build -trimpath -ldflags="-s -w" \
             -o dist/coding-plan-usage ./cmd/coding-plan-usage
 
-      - name: 安装 SSH 密码认证工具
-        run: |
-          sudo apt-get update
-          sudo apt-get install -y --no-install-recommends sshpass
-
-      - name: 配置 SSH
-        shell: bash
-        env:
-          DEPLOY_KNOWN_HOSTS: ${{ secrets.DEPLOY_KNOWN_HOSTS }}
-        run: |
-          set -euo pipefail
-
-          if [[ -z "$DEPLOY_KNOWN_HOSTS" ]]; then
-            echo "::error::必须配置 DEPLOY_KNOWN_HOSTS Secret"
-            exit 1
-          fi
-
-          install -d -m 700 "$HOME/.ssh"
-          printf '%s\n' "$DEPLOY_KNOWN_HOSTS" > "$HOME/.ssh/known_hosts"
-          chmod 600 "$HOME/.ssh/known_hosts"
-
-      - name: SCP 上传并重启服务
+      - name: 检查部署配置
         shell: bash
         env:
           DEPLOY_HOST: ${{ secrets.DEPLOY_HOST }}
           DEPLOY_USER: ${{ secrets.DEPLOY_USER }}
-          SSHPASS: ${{ secrets.DEPLOY_PASSWORD }}
-          DEPLOY_PORT: ${{ secrets.DEPLOY_PORT || '22' }}
-          DEPLOY_PATH: ${{ vars.DEPLOY_PATH || '/usr/local/bin/coding-plan-usage' }}
-          DEPLOY_SERVICE: ${{ vars.DEPLOY_SERVICE || 'coding-plan-usage.service' }}
+          DEPLOY_PASSWORD: ${{ secrets.DEPLOY_PASSWORD }}
+          DEPLOY_FINGERPRINT: ${{ secrets.DEPLOY_FINGERPRINT }}
         run: |
           set -euo pipefail
 
-          if [[ -z "$SSHPASS" ]]; then
-            echo "::error::必须配置 DEPLOY_PASSWORD Secret"
-            exit 1
-          fi
-          if [[ ! "$DEPLOY_HOST" =~ ^[A-Za-z0-9.-]+$ ]]; then
-            echo "::error::DEPLOY_HOST 为空或格式不正确"
-            exit 1
-          fi
-          if [[ ! "$DEPLOY_USER" =~ ^[A-Za-z_][A-Za-z0-9_-]*$ ]]; then
-            echo "::error::DEPLOY_USER 为空或格式不正确"
-            exit 1
-          fi
-          if [[ ! "$DEPLOY_PORT" =~ ^[0-9]+$ ]] || (( DEPLOY_PORT < 1 || DEPLOY_PORT > 65535 )); then
-            echo "::error::DEPLOY_PORT 必须是 1 到 65535 之间的端口"
-            exit 1
-          fi
-          if [[ ! "$DEPLOY_PATH" =~ ^/[A-Za-z0-9._/-]+$ ]]; then
-            echo "::error::DEPLOY_PATH 必须是无空格的绝对路径"
-            exit 1
-          fi
-          if [[ ! "$DEPLOY_SERVICE" =~ ^[A-Za-z0-9_.@-]+$ ]]; then
-            echo "::error::DEPLOY_SERVICE 格式不正确"
-            exit 1
-          fi
+          for name in DEPLOY_HOST DEPLOY_USER DEPLOY_PASSWORD DEPLOY_FINGERPRINT; do
+            if [[ -z "${!name}" ]]; then
+              echo "::error::必须配置 $name Secret"
+              exit 1
+            fi
+          done
 
-          remote="$DEPLOY_USER@$DEPLOY_HOST"
-          staging_path="/tmp/coding-plan-usage-${GITHUB_SHA}-${GITHUB_RUN_ATTEMPT}"
-          ssh_options=(
-            -o PreferredAuthentications=password,keyboard-interactive
-            -o PubkeyAuthentication=no
-            -o NumberOfPasswordPrompts=1
-            -o StrictHostKeyChecking=yes
-          )
+      - name: SCP 上传二进制
+        uses: appleboy/scp-action@v1.0.0
+        with:
+          host: ${{ secrets.DEPLOY_HOST }}
+          username: ${{ secrets.DEPLOY_USER }}
+          password: ${{ secrets.DEPLOY_PASSWORD }}
+          port: ${{ secrets.DEPLOY_PORT || '22' }}
+          fingerprint: ${{ secrets.DEPLOY_FINGERPRINT }}
+          source: dist/coding-plan-usage
+          target: /tmp/coding-plan-usage-${{ github.sha }}-${{ github.run_attempt }}
+          strip_components: 1
 
-          sshpass -e scp "${ssh_options[@]}" -P "$DEPLOY_PORT" \
-            dist/coding-plan-usage "$remote:$staging_path"
+      - name: 原子替换并重启服务
+        uses: appleboy/ssh-action@v1.2.5
+        env:
+          STAGING_DIR: /tmp/coding-plan-usage-${{ github.sha }}-${{ github.run_attempt }}
+          DEPLOY_PATH: ${{ vars.DEPLOY_PATH || '/usr/local/bin/coding-plan-usage' }}
+          DEPLOY_SERVICE: ${{ vars.DEPLOY_SERVICE || 'coding-plan-usage.service' }}
+        with:
+          host: ${{ secrets.DEPLOY_HOST }}
+          username: ${{ secrets.DEPLOY_USER }}
+          password: ${{ secrets.DEPLOY_PASSWORD }}
+          port: ${{ secrets.DEPLOY_PORT || '22' }}
+          fingerprint: ${{ secrets.DEPLOY_FINGERPRINT }}
+          envs: STAGING_DIR,DEPLOY_PATH,DEPLOY_SERVICE
+          script: |
+            set -eu
 
-          sshpass -e ssh "${ssh_options[@]}" -p "$DEPLOY_PORT" "$remote" \
-            "bash -s -- '$staging_path' '$DEPLOY_PATH' '$DEPLOY_SERVICE'" <<'REMOTE_SCRIPT'
-          set -euo pipefail
+            case "$STAGING_DIR" in
+              /tmp/coding-plan-usage-*) ;;
+              *) echo "临时目录格式不正确" >&2; exit 1 ;;
+            esac
+            case "$DEPLOY_PATH" in
+              /*) ;;
+              *) echo "DEPLOY_PATH 必须是绝对路径" >&2; exit 1 ;;
+            esac
+            case "$DEPLOY_PATH" in
+              *[!A-Za-z0-9._/-]*) echo "DEPLOY_PATH 格式不正确" >&2; exit 1 ;;
+            esac
+            case "$DEPLOY_SERVICE" in
+              ''|*[!A-Za-z0-9_.@-]*) echo "DEPLOY_SERVICE 格式不正确" >&2; exit 1 ;;
+            esac
 
-          staging_path=$1
-          deploy_path=$2
-          service_name=$3
-          next_path="${deploy_path}.new"
+            staging_path="$STAGING_DIR/coding-plan-usage"
+            next_path="${DEPLOY_PATH}.new"
 
-          cleanup() {
-            rm -f "$staging_path"
-          }
-          trap cleanup EXIT
+            cleanup() {
+              rm -f "$staging_path"
+              rmdir "$STAGING_DIR" 2>/dev/null || true
+            }
+            trap cleanup EXIT
 
-          if [[ ! -d "$(dirname "$deploy_path")" ]]; then
-            echo "部署目录不存在：$(dirname "$deploy_path")" >&2
-            exit 1
-          fi
+            deploy_dir=$(dirname "$DEPLOY_PATH")
+            if [ ! -d "$deploy_dir" ]; then
+              echo "部署目录不存在：$deploy_dir" >&2
+              exit 1
+            fi
+            if [ ! -f "$staging_path" ]; then
+              echo "待部署二进制不存在：$staging_path" >&2
+              exit 1
+            fi
 
-          sudo -n install -m 0755 "$staging_path" "$next_path"
-          sudo -n mv -f "$next_path" "$deploy_path"
-          sudo -n systemctl restart "$service_name"
-          sudo -n systemctl is-active --quiet "$service_name"
-          REMOTE_SCRIPT
+            sudo -n install -m 0755 "$staging_path" "$next_path"
+            sudo -n mv -f "$next_path" "$DEPLOY_PATH"
+            sudo -n systemctl restart "$DEPLOY_SERVICE"
+            sudo -n systemctl is-active --quiet "$DEPLOY_SERVICE"
