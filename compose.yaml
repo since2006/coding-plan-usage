@@ -1,0 +1,11 @@
+services:
+  coding-plan-usage:
+    build: .
+    restart: unless-stopped
+    volumes:
+      - ./config.yaml:/config/config.yaml:ro
+      - coding-plan-state:/config/data
+    command: ["run", "--config", "/config/config.yaml"]
+
+volumes:
+  coding-plan-state:

@@ -1,0 +1,13 @@
+# Local secrets and runtime state
+config.yaml
+data/*
+!data/.gitkeep
+
+# Build output
+/coding-plan-usage
+/dist/
+
+# Editor / OS
+.DS_Store
+.idea/
+.vscode/

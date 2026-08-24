@@ -1,0 +1,148 @@
+# Coding Plan 多平台用量监控
+
+定时查询多个火山方舟和智谱 GLM Coding Plan 账号的额度快照，并通过企业微信群机器人发送汇总。程序统一展示 `session/5小时`、`weekly`、模型 `monthly`、`MCP月度` 四类额度的已用百分比和距重置剩余时间（如 `15天08时30分钟`）；不适用于某个平台的额度显示为“无数据”。
+
+## 功能
+
+- 火山 AK/SK + Signature V4（HMAC-SHA256）调用 `GetCodingPlanUsage`
+- 智谱 Coding Plan API Key 查询 5 小时、每周和 MCP 月度额度，兼容 `TOKENS_LIMIT` 与积分制 `CREDIT_LIMIT`
+- 同一进程可混合监控火山和智谱账号
+- 最多 5 个账号并发查询，单账号失败不影响整体汇总
+- 默认每 10 分钟检查，北京时间每天 09:00 固定日报
+- 任一账号的一个或多个周期严格大于 90% 时，只发送一次整体提醒和统一账号状态表
+- 只对任一周期达到 100% 的账号按该周期的重置时间升序排列；其他账号保留采集顺序
+- 按账号、周期、重置时间去重，重启后不会反复提醒
+- 企业微信 Markdown V2 表格每个账号仅占一行，并按平台大小限制自动拆分
+- 支持单次推送、只读预览和纯配置校验
+- 提供非 root Docker 镜像与 Compose 配置
+
+## 配置
+
+复制示例并填写真实凭证：
+
+```bash
+cp config.example.yaml config.yaml
+chmod 600 config.yaml
+```
+
+```yaml
+version: 1
+
+accounts:
+  - name: volc-account
+    provider: volcengine
+    access_key_id: AK...
+    secret_access_key: SK...
+  - name: zhipu-account
+    provider: zhipu
+    api_key: ZHIPU_CODING_PLAN_API_KEY...
+
+wecom:
+  webhook_url: https://qyapi.weixin.qq.com/cgi-bin/webhook/send?key=...
+
+schedule:
+  timezone: Asia/Shanghai
+  poll_interval: 10m
+  daily_at: "09:00"
+
+alert:
+  threshold_percent: 90
+
+state:
+  file: ./data/state.json
+```
+
+`provider` 支持 `volcengine` 和 `zhipu`；为兼容旧配置，省略时默认为 `volcengine`。火山账号必须配置 `access_key_id` 与 `secret_access_key`，智谱账号只配置 `api_key`。
+
+相对状态路径以配置文件所在目录为基准。`config.yaml` 同时包含平台凭证和企业微信地址，已经加入 `.gitignore`，仍应限制为仅运行用户可读。
+
+每组 AK/SK 必须属于要查询的火山账号，并具备方舟用量查询权限。推理使用的 `ark-...` API Key 不能替代控制面 AK/SK。
+
+智谱必须使用 GLM Coding Plan API Key。智谱官方用量查询插件目前明确以个人版套餐为主；团队版 Key 的返回结构和附加请求头没有在公开接口中形成稳定约定，应先使用 `once --dry-run` 验证。
+
+## 使用
+
+本地构建：
+
+```bash
+go build -o coding-plan-usage ./cmd/coding-plan-usage
+```
+
+配置校验（不访问网络）：
+
+```bash
+./coding-plan-usage validate --config config.yaml
+```
+
+查询并预览企业微信 Markdown V2 表格，不调用 webhook、也不写状态：
+
+```bash
+./coding-plan-usage once --config config.yaml --dry-run
+```
+
+立即查询并推送完整汇总：
+
+```bash
+./coding-plan-usage once --config config.yaml
+```
+
+启动常驻调度：
+
+```bash
+./coding-plan-usage run --config config.yaml
+```
+
+常驻模式启动后立即检查一次。每日 09:00 后如果当日日报尚未成功发送，之后每次轮询都会继续补发；阈值消息和所有分片全部发送成功后才记录去重状态。
+
+## Docker Compose
+
+```bash
+cp config.example.yaml config.yaml
+chmod 600 config.yaml
+docker compose up -d --build
+docker compose logs -f
+```
+
+配置以只读方式挂载到 `/config/config.yaml`，示例中的相对状态路径会落到命名卷 `/config/data/state.json`。常驻模式按单实例设计，不要同时启动多个副本。
+
+## 退出码
+
+- `0`：配置有效或所有账号查询、推送成功
+- `1`：配置/状态/API/webhook 失败，或单次执行存在账号查询失败
+- `2`：命令或参数错误
+
+常驻模式遇到单轮查询或推送失败时会记录脱敏日志并继续下一轮，不会退出进程。
+
+## 开发验证
+
+```bash
+go test -race ./...
+go vet ./...
+docker build -t coding-plan-usage:test .
+```
+
+真实 AK/SK 或 API Key 只应通过本地 `once --dry-run` 做 smoke test，不要写入测试 fixture、提交记录或 CI 变量输出。
+
+## 火山 API 约定
+
+- Endpoint：`POST https://open.volcengineapi.com/`
+- Query：`Action=GetCodingPlanUsage&Region=cn-beijing&Version=2024-01-01`
+- Signature service/region：`ark` / `cn-beijing`
+- 响应：`Result.QuotaUsage[]` 中的 `Level`、`Percent`、`ResetTimestamp`
+- `ResetTimestamp <= 0` 表示当前没有可展示的重置时间
+
+实现参考火山引擎的 [Signature V4 文档](https://www.volcengine.com/docs/69190/1400238?lang=zh)、[官方 Go SDK 签名代码](https://github.com/volcengine/volc-sdk-golang/blob/main/base/sign.go)和 [ark-cli Coding Plan 用量说明](https://github.com/volcengine/ark-cli/blob/main/skills/arkcli-usage/references/arkcli-usage-plan.md)。
+
+## 智谱 API 约定
+
+- Endpoint：`GET https://open.bigmodel.cn/api/monitor/usage/quota/limit`
+- 鉴权：`Authorization: <GLM Coding Plan API Key>`，不主动添加 `Bearer` 前缀
+- 5 小时窗口：`unit=3`、`number=5`，归一化为 `session`
+- 每周窗口：`unit=6`、`number=1`，归一化为 `weekly`
+- MCP 月度额度：`TIME_LIMIT` 且 `unit=5`、`number=1`，归一化为 `mcp_monthly`
+- `nextResetTime` 同时兼容秒和毫秒时间戳，内部统一为秒用于提醒去重
+- 当 `percentage` 缺失时，尝试通过 `currentValue / usage` 或 `currentValue / (currentValue + remaining)` 计算
+
+该监控端点由智谱官方用量查询插件使用，但未列入版本化的公开 OpenAPI，返回结构可能随套餐升级变化。实现会兼容当前常见的 `TOKENS_LIMIT`、`CREDIT_LIMIT`、对象型及数组型 `data`，接口发生变化时单账号会显示查询失败，不会影响其他账号汇总。
+
+实现参考智谱的 [Coding Plan 套餐说明](https://docs.bigmodel.cn/cn/coding-plan/overview)、[官方用量查询插件说明](https://docs.bigmodel.cn/cn/coding-plan/extension/usage-query-plugin)及其 [查询脚本源码](https://github.com/zai-org/zai-coding-plugins/blob/main/plugins/glm-plan-usage/skills/usage-query-skill/scripts/query-usage.mjs)。
