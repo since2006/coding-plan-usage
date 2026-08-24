@@ -9,13 +9,22 @@ accounts:
     provider: zhipu
     api_key: ZHIPU_CODING_PLAN_API_KEY_REPLACE_ME
 
+# 不需要企业微信通知时，删除整个 wecom 配置块。
 wecom:
   webhook_url: https://qyapi.weixin.qq.com/cgi-bin/webhook/send?key=REPLACE_ME
+
+# 不需要飞书通知时，删除整个 feishu 配置块。
+feishu:
+  webhook_url: https://open.feishu.cn/open-apis/bot/v2/hook/REPLACE_ME
+  # 未开启飞书机器人的“签名校验”时可删除 secret。
+  secret: REPLACE_ME
 
 schedule:
   timezone: Asia/Shanghai
   poll_interval: 10m
-  daily_at: "09:00"
+  daily_at:
+    - "09:00"
+    - "18:00"
 
 alert:
   threshold_percent: 90

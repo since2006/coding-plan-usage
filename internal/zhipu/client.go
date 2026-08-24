@@ -23,7 +23,6 @@ const (
 
 	limitTokens = "TOKENS_LIMIT"
 	limitCredit = "CREDIT_LIMIT"
-	limitTime   = "TIME_LIMIT"
 )
 
 var ErrNoSubscription = errors.New("未发现有效的智谱 GLM Coding Plan 订阅")
@@ -270,7 +269,7 @@ func decodeHTTPError(statusCode int, raw []byte) error {
 }
 
 func normalizeLimits(limits []quotaLimit) []model.Period {
-	periods := make(map[string]model.Period, 3)
+	periods := make(map[string]model.Period, 2)
 	unclassified := make([]quotaLimit, 0, 2)
 
 	for _, limit := range limits {
@@ -284,13 +283,6 @@ func normalizeLimits(limits []quotaLimit) []model.Period {
 			}
 			if period, ok := periodFromLimit(level, limit); ok {
 				periods[level] = period
-			}
-		case limitTime:
-			if !isWindow(limit, 5, 1) && limit.Unit.Valid && limit.Number.Valid {
-				continue
-			}
-			if period, ok := periodFromLimit(model.LevelMCPMonthly, limit); ok {
-				periods[model.LevelMCPMonthly] = period
 			}
 		}
 	}

@@ -1,18 +1,19 @@
 # Coding Plan 多平台用量监控
 
-定时查询多个火山方舟和智谱 GLM Coding Plan 账号的额度快照，并通过企业微信群机器人发送汇总。程序统一展示 `session/5小时`、`weekly`、模型 `monthly`、`MCP月度` 四类额度的已用百分比和距重置剩余时间（如 `15天08时30分钟`）；不适用于某个平台的额度显示为“无数据”。
+定时查询多个火山方舟和智谱 GLM Coding Plan 账号的额度快照，并通过企业微信群机器人、飞书群自定义机器人发送汇总。程序统一展示 `session/5小时`、`weekly` 和模型 `monthly` 额度的已用百分比；只有周期严格超过 `alert.threshold_percent` 时才显示距重置剩余时间（如 `15天08时30分钟`），并且只展示每个账号实际返回的周期。
 
 ## 功能
 
 - 火山 AK/SK + Signature V4（HMAC-SHA256）调用 `GetCodingPlanUsage`
-- 智谱 Coding Plan API Key 查询 5 小时、每周和 MCP 月度额度，兼容 `TOKENS_LIMIT` 与积分制 `CREDIT_LIMIT`
+- 智谱 Coding Plan API Key 查询 5 小时和每周额度，兼容 `TOKENS_LIMIT` 与积分制 `CREDIT_LIMIT`
 - 同一进程可混合监控火山和智谱账号
 - 最多 5 个账号并发查询，单账号失败不影响整体汇总
-- 默认每 10 分钟检查，北京时间每天 09:00 固定日报
-- 任一账号的一个或多个周期严格大于 90% 时，只发送一次整体提醒和统一账号状态表
+- 默认每 10 分钟检查，可配置每天多个固定日报时刻
+- 任一账号的一个或多个周期严格大于 90% 时，只发送一次整体提醒和统一账号摘要
 - 只对任一周期达到 100% 的账号按该周期的重置时间升序排列；其他账号保留采集顺序
 - 按账号、周期、重置时间去重，重启后不会反复提醒
-- 企业微信 Markdown V2 表格每个账号仅占一行，并按平台大小限制自动拆分
+- 企业微信使用 Markdown V2，飞书使用交互式消息卡片；均按平台大小限制自动拆分
+- 企业微信、飞书可任选其一，也可同时推送；飞书支持可选的签名校验
 - 支持单次推送、只读预览和纯配置校验
 - 提供非 root Docker 镜像与 Compose 配置
 
@@ -40,10 +41,16 @@ accounts:
 wecom:
   webhook_url: https://qyapi.weixin.qq.com/cgi-bin/webhook/send?key=...
 
+feishu:
+  webhook_url: https://open.feishu.cn/open-apis/bot/v2/hook/...
+  secret: 飞书机器人签名校验密钥
+
 schedule:
   timezone: Asia/Shanghai
   poll_interval: 10m
-  daily_at: "09:00"
+  daily_at:
+    - "09:00"
+    - "18:00"
 
 alert:
   threshold_percent: 90
@@ -54,7 +61,11 @@ state:
 
 `provider` 支持 `volcengine` 和 `zhipu`；为兼容旧配置，省略时默认为 `volcengine`。火山账号必须配置 `access_key_id` 与 `secret_access_key`，智谱账号只配置 `api_key`。
 
-相对状态路径以配置文件所在目录为基准。`config.yaml` 同时包含平台凭证和企业微信地址，已经加入 `.gitignore`，仍应限制为仅运行用户可读。
+`wecom.webhook_url` 和 `feishu.webhook_url` 至少配置一个。只使用一个通知渠道时，删除另一个渠道的整个配置块；两个都配置时，每次通知会分别发送到两个群。飞书机器人启用了“签名校验”安全设置时必须填写对应的 `feishu.secret`，未启用时可省略 `secret`。
+
+`schedule.daily_at` 必须是 `"HH:MM"` 时刻列表，使用 24 小时制；列表不能为空，时刻不能重复。
+
+相对状态路径以配置文件所在目录为基准。`config.yaml` 同时包含平台凭证、机器人 webhook 和可选签名密钥，已经加入 `.gitignore`，仍应限制为仅运行用户可读。
 
 每组 AK/SK 必须属于要查询的火山账号，并具备方舟用量查询权限。推理使用的 `ark-...` API Key 不能替代控制面 AK/SK。
 
@@ -74,7 +85,7 @@ go build -o coding-plan-usage ./cmd/coding-plan-usage
 ./coding-plan-usage validate --config config.yaml
 ```
 
-查询并预览企业微信 Markdown V2 表格，不调用 webhook、也不写状态：
+查询并预览通知摘要，不调用任何 webhook、也不写状态：
 
 ```bash
 ./coding-plan-usage once --config config.yaml --dry-run
@@ -92,7 +103,31 @@ go build -o coding-plan-usage ./cmd/coding-plan-usage
 ./coding-plan-usage run --config config.yaml
 ```
 
-常驻模式启动后立即检查一次。每日 09:00 后如果当日日报尚未成功发送，之后每次轮询都会继续补发；阈值消息和所有分片全部发送成功后才记录去重状态。
+常驻模式启动后立即检查一次。每个日报时刻后如果该时段尚未成功发送，之后每次轮询都会继续补发；如同一天错过多个时刻，只补发最近一个。阈值消息和所有分片全部发送成功后才记录去重状态。
+
+## GitHub Actions 直接部署
+
+`.github/workflows/deploy.yml` 会在代码推送到 `main` 后运行测试和静态检查，交叉编译无 CGO 依赖的 Linux 二进制，通过 SCP 上传到服务器，原子替换目标文件并重启 systemd 服务。也可以在 GitHub Actions 页面手动触发。
+
+仓库需要配置以下 Actions Secrets：
+
+- `DEPLOY_HOST`：服务器域名或 IPv4 地址
+- `DEPLOY_USER`：SSH 登录用户
+- `DEPLOY_SSH_KEY`：SSH 私钥
+- `DEPLOY_KNOWN_HOSTS`：已经核验指纹的服务器 `known_hosts` 记录
+- `DEPLOY_PORT`：可选，SSH 端口，默认 `22`
+
+可选的 Actions Variables：
+
+- `DEPLOY_PATH`：二进制安装路径，默认 `/usr/local/bin/coding-plan-usage`
+- `DEPLOY_SERVICE`：systemd 服务名，默认 `coding-plan-usage.service`
+- `DEPLOY_GOARCH`：服务器架构，支持 `amd64`（默认）或 `arm64`
+
+服务器需要预先安装并启用对应的 systemd 服务和 `config.yaml`。部署用户必须可以通过无密码 `sudo` 执行 `install`、`mv` 和 `systemctl`；工作流使用 `sudo -n`，权限不足时会直接失败而不会等待密码输入。`DEPLOY_KNOWN_HOSTS` 可用下面的命令生成，但应先通过可信渠道核验服务器主机密钥指纹：
+
+```bash
+ssh-keyscan -p 22 your-server.example.com
+```
 
 ## Docker Compose
 
@@ -139,7 +174,6 @@ docker build -t coding-plan-usage:test .
 - 鉴权：`Authorization: <GLM Coding Plan API Key>`，不主动添加 `Bearer` 前缀
 - 5 小时窗口：`unit=3`、`number=5`，归一化为 `session`
 - 每周窗口：`unit=6`、`number=1`，归一化为 `weekly`
-- MCP 月度额度：`TIME_LIMIT` 且 `unit=5`、`number=1`，归一化为 `mcp_monthly`
 - `nextResetTime` 同时兼容秒和毫秒时间戳，内部统一为秒用于提醒去重
 - 当 `percentage` 缺失时，尝试通过 `currentValue / usage` 或 `currentValue / (currentValue + remaining)` 计算
 

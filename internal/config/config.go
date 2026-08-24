@@ -8,6 +8,7 @@ import (
 	"net/url"
 	"os"
 	"path/filepath"
+	"sort"
 	"strconv"
 	"strings"
 	"time"
@@ -26,14 +27,14 @@ type Config struct {
 	Version  int       `yaml:"version"`
 	Accounts []Account `yaml:"accounts"`
 	WeCom    WeCom     `yaml:"wecom"`
+	Feishu   Feishu    `yaml:"feishu"`
 	Schedule Schedule  `yaml:"schedule"`
 	Alert    Alert     `yaml:"alert"`
 	State    State     `yaml:"state"`
 
 	Location     *time.Location `yaml:"-"`
 	PollInterval time.Duration  `yaml:"-"`
-	DailyHour    int            `yaml:"-"`
-	DailyMinute  int            `yaml:"-"`
+	DailyTimes   []DailyTime    `yaml:"-"`
 }
 
 type Account struct {
@@ -48,10 +49,24 @@ type WeCom struct {
 	WebhookURL string `yaml:"webhook_url"`
 }
 
+type Feishu struct {
+	WebhookURL string `yaml:"webhook_url"`
+	Secret     string `yaml:"secret"`
+}
+
 type Schedule struct {
-	Timezone     string `yaml:"timezone"`
-	PollInterval string `yaml:"poll_interval"`
-	DailyAt      string `yaml:"daily_at"`
+	Timezone     string   `yaml:"timezone"`
+	PollInterval string   `yaml:"poll_interval"`
+	DailyAt      []string `yaml:"daily_at"`
+}
+
+type DailyTime struct {
+	Hour   int
+	Minute int
+}
+
+func (dailyTime DailyTime) String() string {
+	return fmt.Sprintf("%02d:%02d", dailyTime.Hour, dailyTime.Minute)
 }
 
 type Alert struct {
@@ -173,11 +188,21 @@ func (cfg *Config) validate() error {
 	}
 
 	cfg.WeCom.WebhookURL = strings.TrimSpace(cfg.WeCom.WebhookURL)
-	parsedURL, err := url.Parse(cfg.WeCom.WebhookURL)
-	if err != nil || parsedURL.Host == "" || (parsedURL.Scheme != "http" && parsedURL.Scheme != "https") {
+	cfg.Feishu.WebhookURL = strings.TrimSpace(cfg.Feishu.WebhookURL)
+	cfg.Feishu.Secret = strings.TrimSpace(cfg.Feishu.Secret)
+	if cfg.Feishu.WebhookURL == "" && cfg.Feishu.Secret != "" {
+		return errors.New("配置 feishu.secret 时必须同时配置 feishu.webhook_url")
+	}
+	if cfg.WeCom.WebhookURL == "" && cfg.Feishu.WebhookURL == "" {
+		return errors.New("wecom.webhook_url 和 feishu.webhook_url 至少需要配置一个")
+	}
+	if cfg.WeCom.WebhookURL != "" && !validWebhookURL(cfg.WeCom.WebhookURL) {
 		return errors.New("wecom.webhook_url 必须是有效的 http/https URL")
 	}
-
+	if cfg.Feishu.WebhookURL != "" && !validWebhookURL(cfg.Feishu.WebhookURL) {
+		return errors.New("feishu.webhook_url 必须是有效的 http/https URL")
+	}
+	var err error
 	if cfg.Schedule.Timezone == "" {
 		return errors.New("schedule.timezone 不能为空")
 	}
@@ -194,9 +219,29 @@ func (cfg *Config) validate() error {
 		return errors.New("schedule.poll_interval 不能小于 1m")
 	}
 
-	cfg.DailyHour, cfg.DailyMinute, err = parseClock(cfg.Schedule.DailyAt)
-	if err != nil {
-		return fmt.Errorf("schedule.daily_at: %w", err)
+	if len(cfg.Schedule.DailyAt) == 0 {
+		return errors.New("schedule.daily_at 至少需要一个时间")
+	}
+	cfg.DailyTimes = make([]DailyTime, 0, len(cfg.Schedule.DailyAt))
+	seenDailyTimes := make(map[int]struct{}, len(cfg.Schedule.DailyAt))
+	for index, value := range cfg.Schedule.DailyAt {
+		hour, minute, parseErr := parseClock(strings.TrimSpace(value))
+		if parseErr != nil {
+			return fmt.Errorf("schedule.daily_at[%d]: %w", index, parseErr)
+		}
+		minutesSinceMidnight := hour*60 + minute
+		if _, exists := seenDailyTimes[minutesSinceMidnight]; exists {
+			return fmt.Errorf("schedule.daily_at[%d]: 时间 %02d:%02d 重复", index, hour, minute)
+		}
+		seenDailyTimes[minutesSinceMidnight] = struct{}{}
+		cfg.DailyTimes = append(cfg.DailyTimes, DailyTime{Hour: hour, Minute: minute})
+	}
+	sort.Slice(cfg.DailyTimes, func(left, right int) bool {
+		return cfg.DailyTimes[left].Hour*60+cfg.DailyTimes[left].Minute < cfg.DailyTimes[right].Hour*60+cfg.DailyTimes[right].Minute
+	})
+	cfg.Schedule.DailyAt = make([]string, len(cfg.DailyTimes))
+	for index, dailyTime := range cfg.DailyTimes {
+		cfg.Schedule.DailyAt[index] = dailyTime.String()
 	}
 
 	if cfg.Alert.ThresholdPercent < 0 || cfg.Alert.ThresholdPercent > 100 {
@@ -207,6 +252,11 @@ func (cfg *Config) validate() error {
 		return errors.New("state.file 不能为空")
 	}
 	return nil
+}
+
+func validWebhookURL(value string) bool {
+	parsedURL, err := url.Parse(value)
+	return err == nil && parsedURL.Host != "" && (parsedURL.Scheme == "http" || parsedURL.Scheme == "https")
 }
 
 func parseClock(value string) (int, int, error) {

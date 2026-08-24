@@ -18,7 +18,7 @@ const CurrentVersion = 1
 
 type State struct {
 	Version       int                    `json:"version"`
-	LastDailyDate string                 `json:"last_daily_date,omitempty"`
+	LastDailySlot string                 `json:"last_daily_slot,omitempty"`
 	Alerts        map[string]AlertRecord `json:"alerts"`
 }
 

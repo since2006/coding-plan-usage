@@ -5,6 +5,7 @@ import (
 	"errors"
 	"fmt"
 	"log/slog"
+	"sort"
 	"sync"
 	"time"
 
@@ -27,26 +28,33 @@ type StateStore interface {
 }
 
 type Runner struct {
-	collector   Collector
-	sender      Sender
-	renderer    *report.Renderer
-	store       StateStore
-	state       persist.State
-	logger      *slog.Logger
-	location    *time.Location
-	threshold   float64
-	dailyHour   int
-	dailyMinute int
-	now         func() time.Time
+	collector  Collector
+	sender     Sender
+	renderer   *report.Renderer
+	store      StateStore
+	state      persist.State
+	logger     *slog.Logger
+	location   *time.Location
+	threshold  float64
+	dailyTimes []DailyTime
+	now        func() time.Time
 
 	mutex sync.Mutex
 }
 
 type RunnerConfig struct {
-	Location    *time.Location
-	Threshold   float64
-	DailyHour   int
-	DailyMinute int
+	Location   *time.Location
+	Threshold  float64
+	DailyTimes []DailyTime
+}
+
+type DailyTime struct {
+	Hour   int
+	Minute int
+}
+
+func (dailyTime DailyTime) String() string {
+	return fmt.Sprintf("%02d:%02d", dailyTime.Hour, dailyTime.Minute)
 }
 
 type ExecuteMode string
@@ -81,6 +89,10 @@ func NewRunner(
 	if err != nil {
 		return nil, err
 	}
+	dailyTimes, err := normalizeDailyTimes(configuration.DailyTimes)
+	if err != nil {
+		return nil, err
+	}
 	if logger == nil {
 		logger = slog.Default()
 	}
@@ -88,17 +100,16 @@ func NewRunner(
 		now = time.Now
 	}
 	return &Runner{
-		collector:   collector,
-		sender:      sender,
-		renderer:    renderer,
-		store:       store,
-		state:       value,
-		logger:      logger,
-		location:    configuration.Location,
-		threshold:   configuration.Threshold,
-		dailyHour:   configuration.DailyHour,
-		dailyMinute: configuration.DailyMinute,
-		now:         now,
+		collector:  collector,
+		sender:     sender,
+		renderer:   renderer,
+		store:      store,
+		state:      value,
+		logger:     logger,
+		location:   configuration.Location,
+		threshold:  configuration.Threshold,
+		dailyTimes: dailyTimes,
+		now:        now,
 	}, nil
 }
 
@@ -127,7 +138,8 @@ func (runner *Runner) Execute(ctx context.Context, mode ExecuteMode) (Outcome, e
 	stateChanged := persist.RearmAndPrune(&runner.state, usages, runner.threshold, now)
 	newAlerts := persist.NewHighPeriods(runner.state, usages, runner.threshold)
 	outcome.NewAlerts = len(newAlerts)
-	outcome.DailyDue = DailyDue(now, runner.location, runner.dailyHour, runner.dailyMinute, runner.state.LastDailyDate)
+	dailySlot, dailyDue := DailyDue(now, runner.location, runner.dailyTimes, runner.state.LastDailySlot)
+	outcome.DailyDue = dailyDue
 
 	if mode == ModePoll && !outcome.DailyDue && len(newAlerts) == 0 {
 		if stateChanged {
@@ -155,7 +167,7 @@ func (runner *Runner) Execute(ctx context.Context, mode ExecuteMode) (Outcome, e
 
 	persist.MarkHighPeriods(&runner.state, usages, runner.threshold, now)
 	if kind == report.KindDaily {
-		runner.state.LastDailyDate = now.In(runner.location).Format("2006-01-02")
+		runner.state.LastDailySlot = dailySlot
 	}
 	if err := runner.store.Save(runner.state); err != nil {
 		return outcome, fmt.Errorf("消息已发送，但保存去重状态失败: %w", err)
@@ -197,12 +209,47 @@ func (runner *Runner) runPoll(ctx context.Context) {
 	)
 }
 
-func DailyDue(now time.Time, location *time.Location, hour, minute int, lastDailyDate string) bool {
+func DailyDue(now time.Time, location *time.Location, dailyTimes []DailyTime, lastDailySlot string) (string, bool) {
 	localNow := now.In(location)
 	today := localNow.Format("2006-01-02")
-	if lastDailyDate == today {
-		return false
+	var latest DailyTime
+	hasLatest := false
+	for _, dailyTime := range dailyTimes {
+		scheduled := time.Date(localNow.Year(), localNow.Month(), localNow.Day(), dailyTime.Hour, dailyTime.Minute, 0, 0, location)
+		if localNow.Before(scheduled) {
+			continue
+		}
+		if !hasLatest || dailyTime.Hour*60+dailyTime.Minute > latest.Hour*60+latest.Minute {
+			latest = dailyTime
+			hasLatest = true
+		}
 	}
-	scheduled := time.Date(localNow.Year(), localNow.Month(), localNow.Day(), hour, minute, 0, 0, location)
-	return !localNow.Before(scheduled)
+	if !hasLatest {
+		return "", false
+	}
+
+	dueSlot := today + "T" + latest.String()
+	return dueSlot, lastDailySlot < dueSlot
+}
+
+func normalizeDailyTimes(dailyTimes []DailyTime) ([]DailyTime, error) {
+	if len(dailyTimes) == 0 {
+		return nil, errors.New("每日推送时间至少需要一个")
+	}
+	normalized := append([]DailyTime(nil), dailyTimes...)
+	sort.Slice(normalized, func(left, right int) bool {
+		return normalized[left].Hour*60+normalized[left].Minute < normalized[right].Hour*60+normalized[right].Minute
+	})
+	previous := -1
+	for _, dailyTime := range normalized {
+		minutesSinceMidnight := dailyTime.Hour*60 + dailyTime.Minute
+		if dailyTime.Hour < 0 || dailyTime.Hour > 23 || dailyTime.Minute < 0 || dailyTime.Minute > 59 {
+			return nil, fmt.Errorf("无效的每日推送时间 %s", dailyTime.String())
+		}
+		if minutesSinceMidnight == previous {
+			return nil, fmt.Errorf("每日推送时间 %s 重复", dailyTime.String())
+		}
+		previous = minutesSinceMidnight
+	}
+	return normalized, nil
 }

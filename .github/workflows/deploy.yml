@@ -1,0 +1,143 @@
+name: 构建并部署
+
+on:
+  push:
+    branches:
+      - main
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: coding-plan-usage-production
+  cancel-in-progress: false
+
+jobs:
+  deploy:
+    name: 构建并部署到服务器
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+
+    steps:
+      - name: 检出代码
+        uses: actions/checkout@v6
+
+      - name: 配置 Go
+        uses: actions/setup-go@v7
+        with:
+          go-version-file: go.mod
+          cache: true
+
+      - name: 测试
+        run: go test -race ./...
+
+      - name: 静态检查
+        run: go vet ./...
+
+      - name: 构建 Linux 二进制
+        shell: bash
+        env:
+          DEPLOY_GOARCH: ${{ vars.DEPLOY_GOARCH || 'amd64' }}
+        run: |
+          set -euo pipefail
+
+          case "$DEPLOY_GOARCH" in
+            amd64|arm64) ;;
+            *)
+              echo "::error::DEPLOY_GOARCH 只支持 amd64 或 arm64"
+              exit 1
+              ;;
+          esac
+
+          mkdir -p dist
+          CGO_ENABLED=0 GOOS=linux GOARCH="$DEPLOY_GOARCH" \
+            go build -trimpath -ldflags="-s -w" \
+            -o dist/coding-plan-usage ./cmd/coding-plan-usage
+
+      - name: 配置 SSH
+        shell: bash
+        env:
+          DEPLOY_SSH_KEY: ${{ secrets.DEPLOY_SSH_KEY }}
+          DEPLOY_KNOWN_HOSTS: ${{ secrets.DEPLOY_KNOWN_HOSTS }}
+        run: |
+          set -euo pipefail
+
+          if [[ -z "$DEPLOY_SSH_KEY" || -z "$DEPLOY_KNOWN_HOSTS" ]]; then
+            echo "::error::必须配置 DEPLOY_SSH_KEY 和 DEPLOY_KNOWN_HOSTS Secrets"
+            exit 1
+          fi
+
+          install -d -m 700 "$HOME/.ssh"
+          printf '%s\n' "$DEPLOY_SSH_KEY" > "$HOME/.ssh/deploy_key"
+          printf '%s\n' "$DEPLOY_KNOWN_HOSTS" > "$HOME/.ssh/known_hosts"
+          chmod 600 "$HOME/.ssh/deploy_key" "$HOME/.ssh/known_hosts"
+
+      - name: SCP 上传并重启服务
+        shell: bash
+        env:
+          DEPLOY_HOST: ${{ secrets.DEPLOY_HOST }}
+          DEPLOY_USER: ${{ secrets.DEPLOY_USER }}
+          DEPLOY_PORT: ${{ secrets.DEPLOY_PORT || '22' }}
+          DEPLOY_PATH: ${{ vars.DEPLOY_PATH || '/usr/local/bin/coding-plan-usage' }}
+          DEPLOY_SERVICE: ${{ vars.DEPLOY_SERVICE || 'coding-plan-usage.service' }}
+        run: |
+          set -euo pipefail
+
+          if [[ ! "$DEPLOY_HOST" =~ ^[A-Za-z0-9.-]+$ ]]; then
+            echo "::error::DEPLOY_HOST 为空或格式不正确"
+            exit 1
+          fi
+          if [[ ! "$DEPLOY_USER" =~ ^[A-Za-z_][A-Za-z0-9_-]*$ ]]; then
+            echo "::error::DEPLOY_USER 为空或格式不正确"
+            exit 1
+          fi
+          if [[ ! "$DEPLOY_PORT" =~ ^[0-9]+$ ]] || (( DEPLOY_PORT < 1 || DEPLOY_PORT > 65535 )); then
+            echo "::error::DEPLOY_PORT 必须是 1 到 65535 之间的端口"
+            exit 1
+          fi
+          if [[ ! "$DEPLOY_PATH" =~ ^/[A-Za-z0-9._/-]+$ ]]; then
+            echo "::error::DEPLOY_PATH 必须是无空格的绝对路径"
+            exit 1
+          fi
+          if [[ ! "$DEPLOY_SERVICE" =~ ^[A-Za-z0-9_.@-]+$ ]]; then
+            echo "::error::DEPLOY_SERVICE 格式不正确"
+            exit 1
+          fi
+
+          remote="$DEPLOY_USER@$DEPLOY_HOST"
+          staging_path="/tmp/coding-plan-usage-${GITHUB_SHA}-${GITHUB_RUN_ATTEMPT}"
+          ssh_options=(
+            -i "$HOME/.ssh/deploy_key"
+            -o BatchMode=yes
+            -o IdentitiesOnly=yes
+            -o StrictHostKeyChecking=yes
+          )
+
+          scp "${ssh_options[@]}" -P "$DEPLOY_PORT" \
+            dist/coding-plan-usage "$remote:$staging_path"
+
+          ssh "${ssh_options[@]}" -p "$DEPLOY_PORT" "$remote" \
+            "bash -s -- '$staging_path' '$DEPLOY_PATH' '$DEPLOY_SERVICE'" <<'REMOTE_SCRIPT'
+          set -euo pipefail
+
+          staging_path=$1
+          deploy_path=$2
+          service_name=$3
+          next_path="${deploy_path}.new"
+
+          cleanup() {
+            rm -f "$staging_path"
+          }
+          trap cleanup EXIT
+
+          if [[ ! -d "$(dirname "$deploy_path")" ]]; then
+            echo "部署目录不存在：$(dirname "$deploy_path")" >&2
+            exit 1
+          fi
+
+          sudo -n install -m 0755 "$staging_path" "$next_path"
+          sudo -n mv -f "$next_path" "$deploy_path"
+          sudo -n systemctl restart "$service_name"
+          sudo -n systemctl is-active --quiet "$service_name"
+          REMOTE_SCRIPT

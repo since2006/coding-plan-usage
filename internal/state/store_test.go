@@ -13,7 +13,7 @@ func TestStoreSaveLoadRoundTrip(t *testing.T) {
 	path := filepath.Join(t.TempDir(), "nested", "state.json")
 	store := NewStore(path)
 	value := New()
-	value.LastDailyDate = "2026-08-24"
+	value.LastDailySlot = "2026-08-24T18:00"
 	value.Alerts["key"] = AlertRecord{Account: "a", Level: model.LevelWeekly, ResetTimestamp: 123, NotifiedAt: time.Unix(1, 0)}
 	if err := store.Save(value); err != nil {
 		t.Fatalf("Save() error = %v", err)
@@ -22,7 +22,7 @@ func TestStoreSaveLoadRoundTrip(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Load() error = %v", err)
 	}
-	if loaded.LastDailyDate != value.LastDailyDate || loaded.Alerts["key"].Account != "a" {
+	if loaded.LastDailySlot != value.LastDailySlot || loaded.Alerts["key"].Account != "a" {
 		t.Fatalf("loaded = %+v", loaded)
 	}
 	info, err := os.Stat(path)

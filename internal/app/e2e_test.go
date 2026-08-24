@@ -16,7 +16,6 @@ import (
 
 	"coding-plan-usage/internal/collector"
 	"coding-plan-usage/internal/config"
-	"coding-plan-usage/internal/model"
 	"coding-plan-usage/internal/report"
 	persist "coding-plan-usage/internal/state"
 	"coding-plan-usage/internal/volc"
@@ -65,7 +64,7 @@ func TestEndToEndCollectAggregateAndPush(t *testing.T) {
 	renderer := report.NewRenderer(location, 90)
 	sender := wecom.New(webhookServer.URL)
 	store := persist.NewStore(filepath.Join(t.TempDir(), "state.json"))
-	runner, err := NewRunner(RunnerConfig{Location: location, Threshold: 90, DailyHour: 9}, usageCollector, sender, renderer, store, slog.New(slog.NewTextHandler(io.Discard, nil)), func() time.Time { return now })
+	runner, err := NewRunner(RunnerConfig{Location: location, Threshold: 90, DailyTimes: []DailyTime{{Hour: 9}}}, usageCollector, sender, renderer, store, slog.New(slog.NewTextHandler(io.Discard, nil)), func() time.Time { return now })
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -127,7 +126,7 @@ func TestEndToEndCollectZhipuCreditQuotaAndPush(t *testing.T) {
 	)
 	store := persist.NewStore(filepath.Join(t.TempDir(), "state.json"))
 	runner, err := NewRunner(
-		RunnerConfig{Location: time.UTC, Threshold: 90, DailyHour: 9},
+		RunnerConfig{Location: time.UTC, Threshold: 90, DailyTimes: []DailyTime{{Hour: 9}}},
 		usageCollector,
 		wecom.New(webhookServer.URL),
 		report.NewRenderer(time.UTC, 90),
@@ -146,13 +145,10 @@ func TestEndToEndCollectZhipuCreditQuotaAndPush(t *testing.T) {
 	if !outcome.Sent || outcome.Kind != report.KindAlert {
 		t.Fatalf("outcome = %+v", outcome)
 	}
-	if !strings.Contains(pushed, "zhipu-account") || !strings.Contains(pushed, "95.0%") || !strings.Contains(pushed, "20.0%") {
+	if !strings.Contains(pushed, "zhipu-account") || !strings.Contains(pushed, "95.0%") {
 		t.Fatalf("pushed message = %s", pushed)
 	}
-	if _, exists := outcome.Usages[0].Period(model.LevelMonthly); exists {
-		t.Fatalf("MCP quota was reported as model monthly: %+v", outcome.Usages[0].Periods)
-	}
-	if period, exists := outcome.Usages[0].Period(model.LevelMCPMonthly); !exists || period.Percent != 20 {
-		t.Fatalf("MCP monthly period = %+v, exists = %v", period, exists)
+	if len(outcome.Usages[0].Periods) != 2 || strings.Contains(pushed, "20.0%") || strings.Contains(pushed, "MCP") {
+		t.Fatalf("MCP quota should be ignored: periods=%+v, message=%s", outcome.Usages[0].Periods, pushed)
 	}
 }

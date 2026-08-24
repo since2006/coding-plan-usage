@@ -14,8 +14,13 @@ import (
 const (
 	weComMarkdownLimit = 4096
 	chunkSafetyLimit   = 3900
-	tableHeader        = "| 账号 | Session/5小时 | Weekly | Monthly | MCP月度 |\n| :--- | :--- | :--- | :--- | :--- |\n"
 )
+
+var periodLabels = map[string]string{
+	model.LevelSession: "5 小时",
+	model.LevelWeekly:  "周",
+	model.LevelMonthly: "月",
+}
 
 type Kind string
 
@@ -36,23 +41,23 @@ func NewRenderer(location *time.Location, threshold float64) *Renderer {
 
 func (renderer *Renderer) Render(kind Kind, usages []model.AccountUsage, generatedAt time.Time) []string {
 	sorted := renderer.sortUsages(usages)
-	rows := make([]string, 0, len(sorted))
-	for index, usage := range sorted {
-		rows = append(rows, renderer.accountRow(index+1, usage, generatedAt))
+	entries := make([]string, 0, len(sorted))
+	for _, usage := range sorted {
+		entries = append(entries, renderer.accountEntry(usage, generatedAt))
 	}
 
 	baseHeader := renderer.header(kind, generatedAt, "")
 	groups := make([][]string, 0, 1)
 	current := make([]string, 0)
-	currentSize := len(baseHeader) + len(tableHeader)
-	for _, row := range rows {
-		if currentSize+len(row)+1 > chunkSafetyLimit && len(current) > 0 {
+	currentSize := len(baseHeader)
+	for _, entry := range entries {
+		if currentSize+len(entry)+1 > chunkSafetyLimit && len(current) > 0 {
 			groups = append(groups, current)
 			current = make([]string, 0)
-			currentSize = len(baseHeader) + len(tableHeader)
+			currentSize = len(baseHeader)
 		}
-		current = append(current, row)
-		currentSize += len(row) + 1
+		current = append(current, entry)
+		currentSize += len(entry) + 1
 	}
 	if len(current) > 0 || len(groups) == 0 {
 		groups = append(groups, current)
@@ -64,7 +69,7 @@ func (renderer *Renderer) Render(kind Kind, usages []model.AccountUsage, generat
 		if len(groups) > 1 {
 			suffix = fmt.Sprintf("（%d/%d）", index+1, len(groups))
 		}
-		message := renderer.header(kind, generatedAt, suffix) + tableHeader + strings.Join(group, "\n")
+		message := renderer.header(kind, generatedAt, suffix) + strings.Join(group, "\n")
 		if len(message) > weComMarkdownLimit {
 			message = truncateUTF8(message, weComMarkdownLimit-32) + "\n> 内容过长，已截断"
 		}
@@ -79,46 +84,50 @@ func (renderer *Renderer) header(kind Kind, generatedAt time.Time, suffix string
 	case KindDaily:
 		title = "Coding Plan 用量日报"
 	case KindAlert:
-		title = "⚠️ Coding Plan 高用量提醒"
+		title = "Coding Plan 高用量提醒"
 	}
 	return fmt.Sprintf(
-		"# %s%s\n> 统计时间：%s\n> 单元格：已用 / 距重置；⚠️ 表示严格大于 %.1f%%\n\n",
+		"# %s%s\n> 统计时间：%s\n\n",
 		title,
 		suffix,
 		generatedAt.In(renderer.location).Format("2006-01-02 15:04:05 MST"),
-		renderer.threshold,
 	)
 }
 
-func (renderer *Renderer) accountRow(index int, usage model.AccountUsage, generatedAt time.Time) string {
-	name := escapeTableCell(truncateUTF8(usage.Account, 120))
+func (renderer *Renderer) accountEntry(usage model.AccountUsage, generatedAt time.Time) string {
+	name := escapeInlineText(truncateUTF8(usage.Account, 120))
 	if usage.Error != "" {
-		errorMessage := escapeTableCell(truncateUTF8(usage.Error, 240))
-		return fmt.Sprintf("| ❌ %d. %s | 查询失败：%s | — | — | — |", index, name, errorMessage)
+		errorMessage := escapeInlineText(truncateUTF8(usage.Error, 240))
+		return fmt.Sprintf("- ❌ **%s**：查询失败（%s）", name, errorMessage)
 	}
 
-	account := fmt.Sprintf("%d. %s", index, name)
-	if usage.IsHigh(renderer.threshold) {
-		account = "⚠️ **" + account + "**"
-	}
-	cells := make([]string, 0, len(model.CanonicalLevels))
+	account := "**" + name + "**"
+	periods := make([]string, 0, len(model.CanonicalLevels))
+	resets := make([]string, 0, len(model.CanonicalLevels))
 	for _, level := range model.CanonicalLevels {
 		period, exists := usage.Period(level)
 		if !exists {
-			cells = append(cells, "无数据")
 			continue
 		}
 		percentage := fmt.Sprintf("%.1f%%", period.Percent)
 		if period.Percent > renderer.threshold {
-			percentage = "⚠️ **" + percentage + "**"
+			percentage = "**" + percentage + "**"
 		}
-		reset := "暂无活跃窗口"
-		if period.ResetAt != nil {
-			reset = formatRemainingTime(period.ResetAt.Sub(generatedAt))
+		label := periodLabels[level]
+		periodSummary := label + " " + percentage
+		if period.Percent > renderer.threshold && period.ResetAt != nil {
+			resets = append(resets, label+"（"+formatRemainingTime(period.ResetAt.Sub(generatedAt))+"）")
 		}
-		cells = append(cells, percentage+" / "+reset)
+		periods = append(periods, periodSummary)
 	}
-	return fmt.Sprintf("| %s | %s | %s | %s | %s |", account, cells[0], cells[1], cells[2], cells[3])
+	if len(periods) == 0 {
+		return fmt.Sprintf("- %s：暂无用量数据", account)
+	}
+	entry := fmt.Sprintf("- %s：%s", account, strings.Join(periods, "，"))
+	if len(resets) > 0 {
+		entry += "\n  - 重置：" + strings.Join(resets, "，")
+	}
+	return entry
 }
 
 func formatRemainingTime(remaining time.Duration) string {
@@ -191,10 +200,10 @@ func escapeUserText(value string) string {
 	return replacer.Replace(value)
 }
 
-func escapeTableCell(value string) string {
+func escapeInlineText(value string) string {
 	value = strings.NewReplacer("\r", " ", "\n", " ").Replace(value)
 	value = escapeUserText(value)
-	return strings.ReplaceAll(value, "|", "\\|")
+	return value
 }
 
 func truncateUTF8(value string, maxBytes int) string {

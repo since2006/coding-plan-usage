@@ -84,7 +84,7 @@ func TestRunnerThresholdAlertDeduplicatesUntilNewResetWindow(t *testing.T) {
 	}
 }
 
-func TestRunnerSendsOneStatusTableWhenOneAccountHasMultipleHighPeriods(t *testing.T) {
+func TestRunnerSendsOneStatusSummaryWhenOneAccountHasMultipleHighPeriods(t *testing.T) {
 	now := time.Date(2026, 8, 24, 8, 0, 0, 0, time.UTC)
 	sessionReset := now.Add(4 * time.Hour)
 	weeklyReset := now.Add(6 * 24 * time.Hour)
@@ -111,8 +111,11 @@ func TestRunnerSendsOneStatusTableWhenOneAccountHasMultipleHighPeriods(t *testin
 		t.Fatalf("outcome = %+v, sender calls = %d, messages = %d", outcome, sender.calls, len(sender.messages[0]))
 	}
 	message := sender.messages[0][0]
-	if strings.Count(message, "| ⚠️ **1. high** |") != 1 || strings.Count(message, "normal") != 1 || strings.Count(message, "| 账号 | Session/5小时 | Weekly | Monthly | MCP月度 |") != 1 {
-		t.Fatalf("alert must contain one unified account status table:\n%s", message)
+	if strings.Count(message, "- **high**：") != 1 || strings.Count(message, "normal") != 1 || strings.Contains(message, "| 账号 |") || strings.Contains(message, "⚠️") {
+		t.Fatalf("alert must contain one unified compact account summary:\n%s", message)
+	}
+	if !strings.Contains(message, "\n  - 重置：5 小时（04时00分钟），周（6天00时00分钟），月（15天00时00分钟）") {
+		t.Fatalf("high-period reset times must be grouped on a separate line:\n%s", message)
 	}
 }
 
@@ -128,8 +131,8 @@ func TestRunnerDailyCatchupAndManualOnceSemantics(t *testing.T) {
 	if err != nil || !outcome.Sent || outcome.Kind != report.KindDaily {
 		t.Fatalf("daily outcome = %+v, err = %v", outcome, err)
 	}
-	if got := store.value.LastDailyDate; got != "2026-08-24" {
-		t.Fatalf("LastDailyDate = %q", got)
+	if got := store.value.LastDailySlot; got != "2026-08-24T09:00" {
+		t.Fatalf("LastDailySlot = %q", got)
 	}
 	outcome, err = runner.Execute(context.Background(), ModePoll)
 	if err != nil || outcome.Sent {
@@ -141,8 +144,50 @@ func TestRunnerDailyCatchupAndManualOnceSemantics(t *testing.T) {
 	if err != nil || !outcome.Sent || outcome.Kind != report.KindOnce {
 		t.Fatalf("manual outcome = %+v, err = %v", outcome, err)
 	}
-	if got := store.value.LastDailyDate; got != "2026-08-24" {
-		t.Fatalf("manual once changed LastDailyDate to %q", got)
+	if got := store.value.LastDailySlot; got != "2026-08-24T09:00" {
+		t.Fatalf("manual once changed LastDailySlot to %q", got)
+	}
+}
+
+func TestRunnerSendsEachConfiguredDailySlotOnce(t *testing.T) {
+	location, _ := time.LoadLocation("Asia/Shanghai")
+	now := time.Date(2026, 8, 24, 8, 59, 0, 0, location)
+	collector := &fakeCollector{usages: []model.AccountUsage{{Account: "normal"}}}
+	sender := &fakeSender{}
+	store := &memoryStore{value: persist.New()}
+	renderer := report.NewRenderer(location, 90)
+	runner, err := NewRunner(RunnerConfig{
+		Location:   location,
+		Threshold:  90,
+		DailyTimes: []DailyTime{{Hour: 18}, {Hour: 9}},
+	}, collector, sender, renderer, store, slog.New(slog.NewTextHandler(io.Discard, nil)), func() time.Time { return now })
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	if outcome, executeErr := runner.Execute(context.Background(), ModePoll); executeErr != nil || outcome.Sent {
+		t.Fatalf("before first slot outcome = %+v, err = %v", outcome, executeErr)
+	}
+	now = time.Date(2026, 8, 24, 9, 5, 0, 0, location)
+	if outcome, executeErr := runner.Execute(context.Background(), ModePoll); executeErr != nil || !outcome.Sent || outcome.Kind != report.KindDaily {
+		t.Fatalf("morning outcome = %+v, err = %v", outcome, executeErr)
+	}
+	if got := store.value.LastDailySlot; got != "2026-08-24T09:00" {
+		t.Fatalf("morning LastDailySlot = %q", got)
+	}
+	if outcome, executeErr := runner.Execute(context.Background(), ModePoll); executeErr != nil || outcome.Sent {
+		t.Fatalf("duplicate morning outcome = %+v, err = %v", outcome, executeErr)
+	}
+
+	now = time.Date(2026, 8, 24, 18, 5, 0, 0, location)
+	if outcome, executeErr := runner.Execute(context.Background(), ModePoll); executeErr != nil || !outcome.Sent || outcome.Kind != report.KindDaily {
+		t.Fatalf("evening outcome = %+v, err = %v", outcome, executeErr)
+	}
+	if got := store.value.LastDailySlot; got != "2026-08-24T18:00" {
+		t.Fatalf("evening LastDailySlot = %q", got)
+	}
+	if sender.calls != 2 {
+		t.Fatalf("sender calls = %d, want 2", sender.calls)
 	}
 }
 
@@ -182,21 +227,26 @@ func TestRunnerDryRunDoesNotSendOrSave(t *testing.T) {
 
 func TestDailyDue(t *testing.T) {
 	location, _ := time.LoadLocation("Asia/Shanghai")
+	dailyTimes := []DailyTime{{Hour: 9}, {Hour: 18}}
 	tests := []struct {
-		name string
-		now  time.Time
-		last string
-		want bool
+		name     string
+		now      time.Time
+		lastSlot string
+		wantSlot string
+		wantDue  bool
 	}{
-		{name: "before", now: time.Date(2026, 8, 24, 8, 59, 0, 0, location), want: false},
-		{name: "at", now: time.Date(2026, 8, 24, 9, 0, 0, 0, location), want: true},
-		{name: "catchup", now: time.Date(2026, 8, 24, 14, 0, 0, 0, location), want: true},
-		{name: "already sent", now: time.Date(2026, 8, 24, 14, 0, 0, 0, location), last: "2026-08-24", want: false},
+		{name: "before", now: time.Date(2026, 8, 24, 8, 59, 0, 0, location)},
+		{name: "at morning", now: time.Date(2026, 8, 24, 9, 0, 0, 0, location), wantSlot: "2026-08-24T09:00", wantDue: true},
+		{name: "catch up morning", now: time.Date(2026, 8, 24, 14, 0, 0, 0, location), wantSlot: "2026-08-24T09:00", wantDue: true},
+		{name: "morning sent", now: time.Date(2026, 8, 24, 14, 0, 0, 0, location), lastSlot: "2026-08-24T09:00", wantSlot: "2026-08-24T09:00"},
+		{name: "evening after morning", now: time.Date(2026, 8, 24, 18, 5, 0, 0, location), lastSlot: "2026-08-24T09:00", wantSlot: "2026-08-24T18:00", wantDue: true},
+		{name: "late start only latest slot", now: time.Date(2026, 8, 24, 23, 0, 0, 0, location), wantSlot: "2026-08-24T18:00", wantDue: true},
 	}
 	for _, test := range tests {
 		t.Run(test.name, func(t *testing.T) {
-			if got := DailyDue(test.now, location, 9, 0, test.last); got != test.want {
-				t.Fatalf("DailyDue() = %v, want %v", got, test.want)
+			gotSlot, gotDue := DailyDue(test.now, location, dailyTimes, test.lastSlot)
+			if gotSlot != test.wantSlot || gotDue != test.wantDue {
+				t.Fatalf("DailyDue() = (%q, %v), want (%q, %v)", gotSlot, gotDue, test.wantSlot, test.wantDue)
 			}
 		})
 	}
@@ -253,10 +303,9 @@ func newTestRunner(t *testing.T, location *time.Location, now *time.Time, collec
 	renderer := report.NewRenderer(location, 90)
 	logger := slog.New(slog.NewTextHandler(io.Discard, nil))
 	runner, err := NewRunner(RunnerConfig{
-		Location:    location,
-		Threshold:   90,
-		DailyHour:   9,
-		DailyMinute: 0,
+		Location:   location,
+		Threshold:  90,
+		DailyTimes: []DailyTime{{Hour: 9}},
 	}, collector, sender, renderer, store, logger, func() time.Time { return *now })
 	if err != nil {
 		t.Fatal(err)

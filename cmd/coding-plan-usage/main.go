@@ -14,6 +14,8 @@ import (
 	"coding-plan-usage/internal/app"
 	"coding-plan-usage/internal/collector"
 	"coding-plan-usage/internal/config"
+	"coding-plan-usage/internal/feishu"
+	"coding-plan-usage/internal/notify"
 	"coding-plan-usage/internal/report"
 	"coding-plan-usage/internal/state"
 	"coding-plan-usage/internal/volc"
@@ -67,7 +69,7 @@ func runDaemon(arguments []string) int {
 	}
 	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 	defer stop()
-	runtime.logger.Info("监控服务已启动", "poll_interval", runtime.config.PollInterval, "daily_at", runtime.config.Schedule.DailyAt, "timezone", runtime.config.Schedule.Timezone)
+	runtime.logger.Info("监控服务已启动", "poll_interval", runtime.config.PollInterval, "daily_at", strings.Join(runtime.config.Schedule.DailyAt, ","), "timezone", runtime.config.Schedule.Timezone)
 	if err := runtime.runner.Run(ctx, runtime.config.PollInterval); err != nil {
 		fmt.Fprintf(os.Stderr, "服务异常退出：%v\n", err)
 		return 1
@@ -106,7 +108,7 @@ func runOnce(arguments []string) int {
 		return 1
 	}
 	if *dryRun {
-		fmt.Println(strings.Join(outcome.Messages, "\n\n--- 下一条企业微信消息 ---\n\n"))
+		fmt.Println(strings.Join(outcome.Messages, "\n\n--- 下一条通知消息 ---\n\n"))
 	} else {
 		fmt.Fprintf(os.Stderr, "推送成功：账号 %d 个，失败 %d 个，消息 %d 条\n", outcome.Successful, outcome.Failed, len(outcome.Messages))
 	}
@@ -133,7 +135,7 @@ func runValidate(arguments []string) int {
 		return 1
 	}
 	printWarnings(result.Warnings)
-	fmt.Printf("配置有效：%d 个账号，轮询间隔 %s，每日推送 %s %s\n", len(result.Config.Accounts), result.Config.PollInterval, result.Config.Schedule.Timezone, result.Config.Schedule.DailyAt)
+	fmt.Printf("配置有效：%d 个账号，轮询间隔 %s，每日推送 %s %s\n", len(result.Config.Accounts), result.Config.PollInterval, result.Config.Schedule.Timezone, strings.Join(result.Config.Schedule.DailyAt, ", "))
 	return 0
 }
 
@@ -156,13 +158,23 @@ func buildRuntime(configPath string) (*applicationRuntime, error) {
 	zhipuClient := zhipu.NewClient()
 	usageCollector := collector.New(cfg.Accounts, volcClient, collector.WithZhipuClient(zhipuClient))
 	renderer := report.NewRenderer(cfg.Location, cfg.Alert.ThresholdPercent)
-	sender := wecom.New(cfg.WeCom.WebhookURL)
+	targets := make([]notify.Target, 0, 2)
+	if cfg.WeCom.WebhookURL != "" {
+		targets = append(targets, notify.Target{Name: "企业微信", Sender: wecom.New(cfg.WeCom.WebhookURL)})
+	}
+	if cfg.Feishu.WebhookURL != "" {
+		targets = append(targets, notify.Target{Name: "飞书", Sender: feishu.New(cfg.Feishu.WebhookURL, cfg.Feishu.Secret)})
+	}
+	sender := notify.New(targets...)
 	store := state.NewStore(cfg.State.File)
+	dailyTimes := make([]app.DailyTime, len(cfg.DailyTimes))
+	for index, dailyTime := range cfg.DailyTimes {
+		dailyTimes[index] = app.DailyTime{Hour: dailyTime.Hour, Minute: dailyTime.Minute}
+	}
 	runner, err := app.NewRunner(app.RunnerConfig{
-		Location:    cfg.Location,
-		Threshold:   cfg.Alert.ThresholdPercent,
-		DailyHour:   cfg.DailyHour,
-		DailyMinute: cfg.DailyMinute,
+		Location:   cfg.Location,
+		Threshold:  cfg.Alert.ThresholdPercent,
+		DailyTimes: dailyTimes,
 	}, usageCollector, sender, renderer, store, logger, time.Now)
 	if err != nil {
 		return nil, err

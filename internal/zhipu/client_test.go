@@ -13,7 +13,7 @@ import (
 	"coding-plan-usage/internal/model"
 )
 
-func TestClientParsesTokenWindowsAndMCPQuota(t *testing.T) {
+func TestClientParsesTokenWindowsAndIgnoresTimeLimit(t *testing.T) {
 	server := httptest.NewServer(http.HandlerFunc(func(writer http.ResponseWriter, request *http.Request) {
 		if request.Method != http.MethodGet {
 			t.Errorf("method = %s", request.Method)
@@ -44,15 +44,11 @@ func TestClientParsesTokenWindowsAndMCPQuota(t *testing.T) {
 	if usage.Status != "pro" {
 		t.Fatalf("status = %q", usage.Status)
 	}
-	if len(usage.Periods) != 3 {
+	if len(usage.Periods) != 2 {
 		t.Fatalf("periods = %+v", usage.Periods)
 	}
 	assertPeriod(t, usage.Periods[0], model.LevelSession, 12.5, 1_787_600_000)
 	assertPeriod(t, usage.Periods[1], model.LevelWeekly, 44, 1_788_000_000)
-	assertPeriod(t, usage.Periods[2], model.LevelMCPMonthly, 25, 0)
-	if _, exists := findPeriod(usage.Periods, model.LevelMonthly); exists {
-		t.Fatal("MCP quota must not be normalized as model monthly quota")
-	}
 }
 
 func TestClientParsesCreditLimitsAndDerivesPercentage(t *testing.T) {

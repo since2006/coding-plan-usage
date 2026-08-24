@@ -29,11 +29,56 @@ func TestLoadValidConfigAndResolveStatePath(t *testing.T) {
 	if got, want := result.Config.State.File, filepath.Join(directory, "data/state.json"); got != want {
 		t.Fatalf("State.File = %q, want %q", got, want)
 	}
-	if result.Config.DailyHour != 9 || result.Config.DailyMinute != 0 {
-		t.Fatalf("daily time = %02d:%02d", result.Config.DailyHour, result.Config.DailyMinute)
+	if got, want := result.Config.DailyTimes, []DailyTime{{Hour: 9, Minute: 0}}; len(got) != len(want) || got[0] != want[0] {
+		t.Fatalf("DailyTimes = %+v, want %+v", got, want)
 	}
 	if got := result.Config.Accounts[0].Provider; got != ProviderVolcengine {
 		t.Fatalf("default provider = %q, want %q", got, ProviderVolcengine)
+	}
+}
+
+func TestLoadSupportsMultipleSortedDailyTimes(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "config.yaml")
+	content := strings.Replace(validConfig, "  daily_at:\n    - \"09:00\"", "  daily_at:\n    - \"18:00\"\n    - \"09:00\"", 1)
+	writeConfig(t, path, content)
+
+	result, err := Load(path)
+	if err != nil {
+		t.Fatalf("Load() error = %v", err)
+	}
+	want := []DailyTime{{Hour: 9, Minute: 0}, {Hour: 18, Minute: 0}}
+	if len(result.Config.DailyTimes) != len(want) {
+		t.Fatalf("DailyTimes = %+v, want %+v", result.Config.DailyTimes, want)
+	}
+	for index := range want {
+		if result.Config.DailyTimes[index] != want[index] {
+			t.Fatalf("DailyTimes = %+v, want %+v", result.Config.DailyTimes, want)
+		}
+	}
+	if got, want := strings.Join(result.Config.Schedule.DailyAt, ","), "09:00,18:00"; got != want {
+		t.Fatalf("Schedule.DailyAt = %q, want %q", got, want)
+	}
+}
+
+func TestLoadRejectsDuplicateDailyTimes(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "config.yaml")
+	content := strings.Replace(validConfig, "  daily_at:\n    - \"09:00\"", "  daily_at:\n    - \"09:00\"\n    - \"09:00\"", 1)
+	writeConfig(t, path, content)
+
+	_, err := Load(path)
+	if err == nil || !strings.Contains(err.Error(), "重复") {
+		t.Fatalf("Load() error = %v, want duplicate error", err)
+	}
+}
+
+func TestLoadRejectsScalarDailyTime(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "config.yaml")
+	content := strings.Replace(validConfig, "  daily_at:\n    - \"09:00\"", `  daily_at: "09:00"`, 1)
+	writeConfig(t, path, content)
+
+	_, err := Load(path)
+	if err == nil || !strings.Contains(err.Error(), "cannot unmarshal") {
+		t.Fatalf("Load() error = %v, want list type error", err)
 	}
 }
 
@@ -52,6 +97,56 @@ func TestLoadSupportsMixedVolcengineAndZhipuAccounts(t *testing.T) {
 	}
 	if got := result.Config.Accounts[1].APIKey; got != "zhipu-key" {
 		t.Fatalf("zhipu api key = %q", got)
+	}
+}
+
+func TestLoadSupportsFeishuAsOnlyNotificationChannel(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "config.yaml")
+	content := strings.Replace(
+		validConfig,
+		"wecom:\n  webhook_url: https://qyapi.weixin.qq.com/cgi-bin/webhook/send?key=test",
+		"feishu:\n  webhook_url: https://open.feishu.cn/open-apis/bot/v2/hook/test\n  secret: sign-secret",
+		1,
+	)
+	writeConfig(t, path, content)
+
+	result, err := Load(path)
+	if err != nil {
+		t.Fatalf("Load() error = %v", err)
+	}
+	if result.Config.WeCom.WebhookURL != "" {
+		t.Fatalf("WeCom.WebhookURL = %q", result.Config.WeCom.WebhookURL)
+	}
+	if got := result.Config.Feishu.Secret; got != "sign-secret" {
+		t.Fatalf("Feishu.Secret = %q", got)
+	}
+}
+
+func TestLoadRejectsInvalidNotificationConfig(t *testing.T) {
+	tests := []struct {
+		name        string
+		replacement string
+		want        string
+	}{
+		{name: "no channel", replacement: "", want: "至少需要配置一个"},
+		{name: "secret without webhook", replacement: "feishu:\n  secret: sign-secret", want: "必须同时配置"},
+		{name: "invalid feishu webhook", replacement: "feishu:\n  webhook_url: not-a-url", want: "feishu.webhook_url"},
+	}
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			content := strings.Replace(
+				validConfig,
+				"wecom:\n  webhook_url: https://qyapi.weixin.qq.com/cgi-bin/webhook/send?key=test",
+				test.replacement,
+				1,
+			)
+			path := filepath.Join(t.TempDir(), "config.yaml")
+			writeConfig(t, path, content)
+			_, err := Load(path)
+			if err == nil || !strings.Contains(err.Error(), test.want) {
+				t.Fatalf("Load() error = %v, want substring %q", err, test.want)
+			}
+		})
 	}
 }
 
@@ -156,7 +251,8 @@ wecom:
 schedule:
   timezone: Asia/Shanghai
   poll_interval: 10m
-  daily_at: "09:00"
+  daily_at:
+    - "09:00"
 alert:
   threshold_percent: 90
 state:
@@ -179,7 +275,8 @@ const configTail = `wecom:
 schedule:
   timezone: Asia/Shanghai
   poll_interval: 10m
-  daily_at: "09:00"
+  daily_at:
+    - "09:00"
 alert:
   threshold_percent: 90
 state:

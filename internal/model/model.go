@@ -5,13 +5,12 @@ import (
 )
 
 const (
-	LevelSession    = "session"
-	LevelWeekly     = "weekly"
-	LevelMonthly    = "monthly"
-	LevelMCPMonthly = "mcp_monthly"
+	LevelSession = "session"
+	LevelWeekly  = "weekly"
+	LevelMonthly = "monthly"
 )
 
-var CanonicalLevels = []string{LevelSession, LevelWeekly, LevelMonthly, LevelMCPMonthly}
+var CanonicalLevels = []string{LevelSession, LevelWeekly, LevelMonthly}
 
 // Period represents one quota window returned by Coding Plan.
 type Period struct {
@@ -36,15 +35,6 @@ type AccountUsage struct {
 	Periods     []Period
 	CollectedAt time.Time
 	Error       string
-}
-
-func (u AccountUsage) IsHigh(threshold float64) bool {
-	for _, period := range u.Periods {
-		if period.Percent > threshold {
-			return true
-		}
-	}
-	return false
 }
 
 func (u AccountUsage) Period(level string) (Period, bool) {
