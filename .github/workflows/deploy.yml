@@ -70,7 +70,7 @@ jobs:
         uses: appleboy/ssh-action@v1.2.5
         env:
           STAGING_DIR: /tmp/coding-plan-usage-${{ github.sha }}-${{ github.run_attempt }}
-          DEPLOY_PATH: ${{ vars.DEPLOY_PATH || '/usr/local/bin/coding-plan-usage' }}
+          DEPLOY_PATH: ${{ vars.DEPLOY_PATH || '/srv/coding-plan-usage/coding-plan-usage' }}
           DEPLOY_SERVICE: ${{ vars.DEPLOY_SERVICE || 'coding-plan-usage.service' }}
         with:
           host: ${{ secrets.DEPLOY_HOST }}

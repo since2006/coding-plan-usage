@@ -118,11 +118,44 @@ go build -o coding-plan-usage ./cmd/coding-plan-usage
 
 可选的 Actions Variables：
 
-- `DEPLOY_PATH`：二进制安装路径，默认 `/usr/local/bin/coding-plan-usage`
+- `DEPLOY_PATH`：二进制安装路径，默认 `/srv/coding-plan-usage/coding-plan-usage`
 - `DEPLOY_SERVICE`：systemd 服务名，默认 `coding-plan-usage.service`
 - `DEPLOY_GOARCH`：服务器架构，支持 `amd64`（默认）或 `arm64`
 
-服务器必须启用 SSH 密码认证，并预先安装、启用对应的 systemd 服务和 `config.yaml`。部署用户必须可以通过无密码 `sudo` 执行 `install`、`mv` 和 `systemctl`；SSH 登录密码不会被用于 `sudo`，权限不足时工作流会直接失败。
+Workflow 只更新二进制，不上传 `config.yaml`，也不会自动覆盖 systemd 服务定义。仓库提供了 `deploy/coding-plan-usage.service` 样板，默认使用以下服务器布局：
+
+```text
+/srv/coding-plan-usage/
+├── coding-plan-usage
+├── config.yaml
+└── data/
+    └── state.json
+```
+
+首次部署前，在服务器上创建运行用户和目录：
+
+```bash
+sudo useradd --system --home-dir /srv/coding-plan-usage --shell /usr/sbin/nologin coding-plan-usage
+sudo install -d -m 0755 /srv/coding-plan-usage
+sudo install -d -o coding-plan-usage -g coding-plan-usage -m 0750 /srv/coding-plan-usage/data
+```
+
+将填写完成的 `config.yaml` 放入 `/srv/coding-plan-usage/config.yaml`，再设置权限：
+
+```bash
+sudo chown coding-plan-usage:coding-plan-usage /srv/coding-plan-usage/config.yaml
+sudo chmod 600 /srv/coding-plan-usage/config.yaml
+```
+
+安装并启用 systemd 服务定义：
+
+```bash
+sudo install -m 0644 deploy/coding-plan-usage.service /etc/systemd/system/coding-plan-usage.service
+sudo systemctl daemon-reload
+sudo systemctl enable coding-plan-usage.service
+```
+
+完成初始化后，推送到 `main` 或手动运行 Workflow。它会把二进制部署到 `/srv/coding-plan-usage/coding-plan-usage`，然后启动或重启服务。服务器必须启用 SSH 密码认证；部署用户还必须可以通过无密码 `sudo` 执行 `install`、`mv` 和 `systemctl`，SSH 登录密码不会被用于 `sudo`。
 
 ## Docker Compose
 
