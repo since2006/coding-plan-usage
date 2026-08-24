@@ -113,7 +113,7 @@ go build -o coding-plan-usage ./cmd/coding-plan-usage
 
 - `DEPLOY_HOST`：服务器域名或 IPv4 地址
 - `DEPLOY_USER`：SSH 登录用户
-- `DEPLOY_SSH_KEY`：SSH 私钥
+- `DEPLOY_PASSWORD`：SSH 登录密码
 - `DEPLOY_KNOWN_HOSTS`：已经核验指纹的服务器 `known_hosts` 记录
 - `DEPLOY_PORT`：可选，SSH 端口，默认 `22`
 
@@ -123,7 +123,7 @@ go build -o coding-plan-usage ./cmd/coding-plan-usage
 - `DEPLOY_SERVICE`：systemd 服务名，默认 `coding-plan-usage.service`
 - `DEPLOY_GOARCH`：服务器架构，支持 `amd64`（默认）或 `arm64`
 
-服务器需要预先安装并启用对应的 systemd 服务和 `config.yaml`。部署用户必须可以通过无密码 `sudo` 执行 `install`、`mv` 和 `systemctl`；工作流使用 `sudo -n`，权限不足时会直接失败而不会等待密码输入。`DEPLOY_KNOWN_HOSTS` 可用下面的命令生成，但应先通过可信渠道核验服务器主机密钥指纹：
+服务器必须启用 SSH 密码认证，并预先安装、启用对应的 systemd 服务和 `config.yaml`。部署用户必须可以通过无密码 `sudo` 执行 `install`、`mv` 和 `systemctl`；SSH 登录密码不会被用于 `sudo`，权限不足时工作流会直接失败。`DEPLOY_KNOWN_HOSTS` 可用下面的命令生成，但应先通过可信渠道核验服务器主机密钥指纹：
 
 ```bash
 ssh-keyscan -p 22 your-server.example.com
