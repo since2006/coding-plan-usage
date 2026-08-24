@@ -5,8 +5,6 @@ After=network-online.target
 
 [Service]
 Type=simple
-User=coding-plan-usage
-Group=coding-plan-usage
 WorkingDirectory=/srv/coding-plan-usage
 ExecStart=/srv/coding-plan-usage/coding-plan-usage run --config /srv/coding-plan-usage/config.yaml
 Restart=on-failure

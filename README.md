@@ -132,18 +132,17 @@ Workflow 只更新二进制，不上传 `config.yaml`，也不会自动覆盖 sy
     └── state.json
 ```
 
-首次部署前，在服务器上创建运行用户和目录：
+首次部署前，在服务器上创建目录：
 
 ```bash
-sudo useradd --system --home-dir /srv/coding-plan-usage --shell /usr/sbin/nologin coding-plan-usage
 sudo install -d -m 0755 /srv/coding-plan-usage
-sudo install -d -o coding-plan-usage -g coding-plan-usage -m 0750 /srv/coding-plan-usage/data
+sudo install -d -m 0700 /srv/coding-plan-usage/data
 ```
 
 将填写完成的 `config.yaml` 放入 `/srv/coding-plan-usage/config.yaml`，再设置权限：
 
 ```bash
-sudo chown coding-plan-usage:coding-plan-usage /srv/coding-plan-usage/config.yaml
+sudo chown root:root /srv/coding-plan-usage/config.yaml
 sudo chmod 600 /srv/coding-plan-usage/config.yaml
 ```
 
@@ -155,7 +154,7 @@ sudo systemctl daemon-reload
 sudo systemctl enable coding-plan-usage.service
 ```
 
-完成初始化后，推送到 `main` 或手动运行 Workflow。它会把二进制部署到 `/srv/coding-plan-usage/coding-plan-usage`，然后启动或重启服务。服务器必须启用 SSH 密码认证；部署用户还必须可以通过无密码 `sudo` 执行 `install`、`mv` 和 `systemctl`，SSH 登录密码不会被用于 `sudo`。
+service 样板没有指定 `User` 或 `Group`，因此 systemd 默认以 root 运行程序。完成初始化后，推送到 `main` 或手动运行 Workflow。它会把二进制部署到 `/srv/coding-plan-usage/coding-plan-usage`，然后启动或重启服务。服务器必须启用 SSH 密码认证；部署用户还必须可以通过无密码 `sudo` 执行 `install`、`mv` 和 `systemctl`，SSH 登录密码不会被用于 `sudo`。
 
 ## Docker Compose
 
