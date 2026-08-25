@@ -159,7 +159,15 @@ func (runner *Runner) Execute(ctx context.Context, mode ExecuteMode) (Outcome, e
 		}
 	}
 	outcome.Kind = kind
-	outcome.Messages = runner.renderer.Render(kind, usages, now)
+	if kind == report.KindAlert {
+		alertedAccounts := make([]string, 0, len(newAlerts))
+		for _, alert := range newAlerts {
+			alertedAccounts = append(alertedAccounts, alert.Account)
+		}
+		outcome.Messages = runner.renderer.RenderAlert(usages, alertedAccounts, now)
+	} else {
+		outcome.Messages = runner.renderer.Render(kind, usages, now)
+	}
 	if err := runner.sender.Send(ctx, outcome.Messages); err != nil {
 		return outcome, err
 	}

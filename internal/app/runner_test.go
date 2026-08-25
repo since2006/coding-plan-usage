@@ -84,7 +84,7 @@ func TestRunnerThresholdAlertDeduplicatesUntilNewResetWindow(t *testing.T) {
 	}
 }
 
-func TestRunnerSendsOneStatusSummaryWhenOneAccountHasMultipleHighPeriods(t *testing.T) {
+func TestRunnerSeparatesOneHighAccountFromAllAccountStatistics(t *testing.T) {
 	now := time.Date(2026, 8, 24, 8, 0, 0, 0, time.UTC)
 	sessionReset := now.Add(4 * time.Hour)
 	weeklyReset := now.Add(6 * 24 * time.Hour)
@@ -111,10 +111,13 @@ func TestRunnerSendsOneStatusSummaryWhenOneAccountHasMultipleHighPeriods(t *test
 		t.Fatalf("outcome = %+v, sender calls = %d, messages = %d", outcome, sender.calls, len(sender.messages[0]))
 	}
 	message := sender.messages[0][0]
-	if strings.Count(message, "- **high**：") != 1 || strings.Count(message, "normal") != 1 || strings.Contains(message, "| 账号 |") || strings.Contains(message, "⚠️") {
-		t.Fatalf("alert must contain one unified compact account summary:\n%s", message)
+	if !strings.Contains(message, "## 当前检测到的高用量账号（1 个）") || !strings.Contains(message, "## 全部账号用量统计") {
+		t.Fatalf("alert sections are missing:\n%s", message)
 	}
-	if !strings.Contains(message, "\n  - 重置：5 小时（04时00分钟），周（6天00时00分钟），月（15天00时00分钟）") {
+	if strings.Count(message, "- **high**：") != 2 || strings.Count(message, "normal") != 1 || strings.Contains(message, "| 账号 |") || strings.Contains(message, "⚠️") {
+		t.Fatalf("alert must show the triggering account once in each section and all other accounts once:\n%s", message)
+	}
+	if strings.Count(message, "\n  - 重置：5 小时（04时00分钟），周（6天00时00分钟），月（15天00时00分钟）") != 2 {
 		t.Fatalf("high-period reset times must be grouped on a separate line:\n%s", message)
 	}
 }

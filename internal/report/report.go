@@ -35,29 +35,114 @@ type Renderer struct {
 	threshold float64
 }
 
+type section struct {
+	title   string
+	entries []string
+}
+
 func NewRenderer(location *time.Location, threshold float64) *Renderer {
 	return &Renderer{location: location, threshold: threshold}
 }
 
 func (renderer *Renderer) Render(kind Kind, usages []model.AccountUsage, generatedAt time.Time) []string {
 	sorted := renderer.sortUsages(usages)
-	entries := make([]string, 0, len(sorted))
-	for _, usage := range sorted {
-		entries = append(entries, renderer.accountEntry(usage, generatedAt))
+	return renderer.renderSections(kind, []section{{entries: renderer.accountEntries(sorted, generatedAt)}}, generatedAt)
+}
+
+// RenderAlert separates the accounts that triggered this notification from the
+// complete usage report. Both sections retain the same ordering used by daily
+// reports, and an account that triggered multiple periods is shown only once in
+// the first section.
+func (renderer *Renderer) RenderAlert(usages []model.AccountUsage, alertedAccounts []string, generatedAt time.Time) []string {
+	sorted := renderer.sortUsages(usages)
+	alerted := make(map[string]struct{}, len(alertedAccounts))
+	for _, account := range alertedAccounts {
+		alerted[account] = struct{}{}
 	}
 
+	highUsages := make([]model.AccountUsage, 0, len(alerted))
+	seen := make(map[string]struct{}, len(alerted))
+	for _, usage := range sorted {
+		if _, exists := alerted[usage.Account]; !exists {
+			continue
+		}
+		if _, exists := seen[usage.Account]; exists {
+			continue
+		}
+		seen[usage.Account] = struct{}{}
+		highUsages = append(highUsages, usage)
+	}
+
+	sections := []section{
+		{
+			title:   fmt.Sprintf("当前检测到的高用量账号（%d 个）", len(highUsages)),
+			entries: renderer.accountEntries(highUsages, generatedAt),
+		},
+		{
+			title:   "全部账号用量统计",
+			entries: renderer.accountEntries(sorted, generatedAt),
+		},
+	}
+	return renderer.renderSections(KindAlert, sections, generatedAt)
+}
+
+func (renderer *Renderer) accountEntries(usages []model.AccountUsage, generatedAt time.Time) []string {
+	entries := make([]string, 0, len(usages))
+	for _, usage := range usages {
+		entries = append(entries, renderer.accountEntry(usage, generatedAt))
+	}
+	return entries
+}
+
+func (renderer *Renderer) renderSections(kind Kind, sections []section, generatedAt time.Time) []string {
 	baseHeader := renderer.header(kind, generatedAt, "")
 	groups := make([][]string, 0, 1)
 	current := make([]string, 0)
 	currentSize := len(baseHeader)
-	for _, entry := range entries {
-		if currentSize+len(entry)+1 > chunkSafetyLimit && len(current) > 0 {
-			groups = append(groups, current)
-			current = make([]string, 0)
-			currentSize = len(baseHeader)
+	flush := func() {
+		groups = append(groups, current)
+		current = make([]string, 0)
+		currentSize = len(baseHeader)
+	}
+	appendBlock := func(block string) {
+		current = append(current, block)
+		currentSize += len(block) + 1
+	}
+
+	for _, reportSection := range sections {
+		heading := ""
+		if reportSection.title != "" {
+			heading = "## " + reportSection.title + "\n"
+			if currentSize+len(heading)+1 > chunkSafetyLimit && len(current) > 0 {
+				flush()
+			}
+			appendBlock(heading)
 		}
-		current = append(current, entry)
-		currentSize += len(entry) + 1
+
+		entriesInChunk := 0
+		for _, entry := range reportSection.entries {
+			if currentSize+len(entry)+1 > chunkSafetyLimit && len(current) > 0 {
+				switch {
+				case heading != "" && entriesInChunk == 0:
+					// Move a newly appended heading to the next chunk so it
+					// stays together with the section's first account.
+					current = current[:len(current)-1]
+					currentSize -= len(heading) + 1
+					if len(current) > 0 {
+						flush()
+					}
+					appendBlock(heading)
+				case heading != "":
+					flush()
+					appendBlock("## " + reportSection.title + "（续）\n")
+					entriesInChunk = 0
+				default:
+					flush()
+				}
+			}
+			appendBlock(entry)
+			entriesInChunk++
+		}
 	}
 	if len(current) > 0 || len(groups) == 0 {
 		groups = append(groups, current)

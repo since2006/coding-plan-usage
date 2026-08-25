@@ -20,7 +20,7 @@ func TestRenderPreservesNonLimitOrderAndEscapesUserText(t *testing.T) {
 		{Account: "normal", Periods: []model.Period{{Level: model.LevelWeekly, Percent: 20, ResetAt: &nearReset}}},
 		{Account: "failed", Error: "AccessDenied <secret>"},
 	}
-	messages := renderer.Render(KindAlert, usages, generatedAt)
+	messages := renderer.Render(KindOnce, usages, generatedAt)
 	if len(messages) != 1 {
 		t.Fatalf("message count = %d", len(messages))
 	}
@@ -51,6 +51,49 @@ func TestRenderPreservesNonLimitOrderAndEscapesUserText(t *testing.T) {
 	}
 	if strings.Contains(message, "| 账号 |") || strings.Contains(message, "无数据") || strings.Contains(message, "暂无活跃窗口") {
 		t.Fatalf("report should omit table markup and empty-period placeholders:\n%s", message)
+	}
+}
+
+func TestRenderAlertSeparatesNewHighAccountsFromDailyOrderedStatistics(t *testing.T) {
+	renderer := NewRenderer(time.UTC, 90)
+	generatedAt := time.Date(2026, 8, 25, 8, 29, 30, 0, time.UTC)
+	soonReset := generatedAt.Add(24 * time.Hour)
+	lateReset := generatedAt.Add(14 * 24 * time.Hour)
+	usages := []model.AccountUsage{
+		{Account: "limit-late", Periods: []model.Period{{Level: model.LevelMonthly, Percent: 100, ResetAt: &lateReset}}},
+		{Account: "normal", Periods: []model.Period{{Level: model.LevelWeekly, Percent: 20}}},
+		{Account: "new-high", Periods: []model.Period{{Level: model.LevelSession, Percent: 92}}},
+		{Account: "limit-soon", Periods: []model.Period{{Level: model.LevelMonthly, Percent: 100, ResetAt: &soonReset}}},
+	}
+
+	messages := renderer.RenderAlert(usages, []string{"new-high", "new-high"}, generatedAt)
+	if len(messages) != 1 {
+		t.Fatalf("message count = %d", len(messages))
+	}
+	message := messages[0]
+	highHeading := "## 当前检测到的高用量账号（1 个）"
+	allHeading := "## 全部账号用量统计"
+	highIndex := strings.Index(message, highHeading)
+	allIndex := strings.Index(message, allHeading)
+	if highIndex < 0 || allIndex <= highIndex {
+		t.Fatalf("alert sections missing or out of order:\n%s", message)
+	}
+	if strings.Count(message, "new-high") != 2 {
+		t.Fatalf("new high account must appear once in each section:\n%s", message)
+	}
+	if strings.Contains(message[highIndex:allIndex], "limit-soon") || strings.Contains(message[highIndex:allIndex], "normal") {
+		t.Fatalf("high-usage section contains an account that did not trigger this alert:\n%s", message)
+	}
+
+	allStatistics := message[allIndex:]
+	wantOrder := []string{"limit-soon", "limit-late", "normal", "new-high"}
+	previous := -1
+	for _, account := range wantOrder {
+		index := strings.Index(allStatistics, account)
+		if index <= previous {
+			t.Fatalf("account %q is out of daily-report order:\n%s", account, message)
+		}
+		previous = index
 	}
 }
 
