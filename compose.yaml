@@ -5,6 +5,9 @@ services:
     volumes:
       - ./config.yaml:/config/config.yaml:ro
       - coding-plan-state:/config/data
+    # 启用 wecom.bot 时取消下面两行注释，并与 listen_address 端口保持一致。
+    # ports:
+    #   - "8080:8080"
     command: ["run", "--config", "/config/config.yaml"]
 
 volumes:

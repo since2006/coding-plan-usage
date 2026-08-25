@@ -14,6 +14,7 @@
 - 按账号、周期、重置时间去重，重启后不会反复提醒
 - 企业微信使用 Markdown V2，飞书使用交互式消息卡片；均按平台大小限制自动拆分
 - 企业微信、飞书可任选其一，也可同时推送；飞书支持可选的签名校验
+- 支持企业微信智能机器人 URL 回调，成员发送消息即可异步查询最新用量
 - 支持单次推送、只读预览和纯配置校验
 - 提供非 root Docker 镜像与 Compose 配置
 
@@ -40,6 +41,10 @@ accounts:
 
 wecom:
   webhook_url: https://qyapi.weixin.qq.com/cgi-bin/webhook/send?key=...
+  bot:
+    listen_address: :8080
+    token: 企业微信智能机器人回调 Token
+    encoding_aes_key: 43 位 EncodingAESKey
 
 feishu:
   webhook_url: https://open.feishu.cn/open-apis/bot/v2/hook/...
@@ -63,13 +68,23 @@ state:
 
 `wecom.webhook_url` 和 `feishu.webhook_url` 至少配置一个。只使用一个通知渠道时，删除另一个渠道的整个配置块；两个都配置时，每次通知会分别发送到两个群。飞书机器人启用了“签名校验”安全设置时必须填写对应的 `feishu.secret`，未启用时可省略 `secret`。
 
+`wecom.bot` 为可选配置，`listen_address`、`token` 和 `encoding_aes_key` 必须同时填写。启动后将同时提供企业微信智能机器人 API 模式所需的 URL 回调：
+
+```text
+GET/POST /api/v1/vendor/wecom/bot/callback
+```
+
+在企业微信智能机器人管理页选择“使用 URL 回调”，公网 URL 填写 `https://你的域名/api/v1/vendor/wecom/bot/callback`，Token 和 EncodingAESKey 必须与配置一致。服务会完成 GET 验证、POST 验签与解密；用户发送消息后，回调先快速返回，再通过企业微信提供的一次性 `response_url` 异步回复最新用量。重复的 `msgid` 在两小时内只处理一次。公网 HTTPS、域名证书和反向代理由部署环境提供。
+
 `schedule.daily_at` 必须是 `"HH:MM"` 时刻列表，使用 24 小时制；列表不能为空，时刻不能重复。
 
-相对状态路径以配置文件所在目录为基准。`config.yaml` 同时包含平台凭证、机器人 webhook 和可选签名密钥，已经加入 `.gitignore`，仍应限制为仅运行用户可读。
+相对状态路径以配置文件所在目录为基准。`config.yaml` 同时包含平台凭证、机器人 webhook、回调 Token 和加密密钥，已经加入 `.gitignore`，仍应限制为仅运行用户可读。
 
 每组 AK/SK 必须属于要查询的火山账号，并具备方舟用量查询权限。推理使用的 `ark-...` API Key 不能替代控制面 AK/SK。
 
 智谱必须使用 GLM Coding Plan API Key。智谱官方用量查询插件目前明确以个人版套餐为主；团队版 Key 的返回结构和附加请求头没有在公开接口中形成稳定约定，应先使用 `once --dry-run` 验证。
+
+企业微信智能机器人 URL 回调的验签、AES-256-CBC 加解密、被动欢迎语和 `response_url` 异步 Markdown 回复遵循企业微信的[智能机器人 API 文档](https://developer.work.weixin.qq.com/document/path/101039)。智能机器人场景的 `ReceiveId` 按官方约定使用空字符串。
 
 ## 使用
 
@@ -102,6 +117,8 @@ go build -o coding-plan-usage ./cmd/coding-plan-usage
 ```bash
 ./coding-plan-usage run --config config.yaml
 ```
+
+智能机器人回调只在 `run` 常驻模式下监听。Docker Compose 部署时还需取消 `compose.yaml` 中 `ports` 的注释；使用反向代理时将上述固定路径转发到 `wecom.bot.listen_address`。
 
 常驻模式启动后立即检查一次。每个日报时刻后如果该时段尚未成功发送，之后每次轮询都会继续补发；如同一天错过多个时刻，只补发最近一个。阈值消息和所有分片全部发送成功后才记录去重状态。
 

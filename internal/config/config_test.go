@@ -122,6 +122,57 @@ func TestLoadSupportsFeishuAsOnlyNotificationChannel(t *testing.T) {
 	}
 }
 
+func TestLoadSupportsWeComSmartBot(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "config.yaml")
+	content := strings.Replace(
+		validConfig,
+		"  webhook_url: https://qyapi.weixin.qq.com/cgi-bin/webhook/send?key=test",
+		"  webhook_url: https://qyapi.weixin.qq.com/cgi-bin/webhook/send?key=test\n  bot:\n    listen_address: :8080\n    token: BotToken123\n    encoding_aes_key: abcdefghijklmnopqrstuvwxyz0123456789ABCDEFG",
+		1,
+	)
+	writeConfig(t, path, content)
+
+	result, err := Load(path)
+	if err != nil {
+		t.Fatalf("Load() error = %v", err)
+	}
+	if !result.Config.WeCom.Bot.Enabled() {
+		t.Fatal("WeCom.Bot.Enabled() = false, want true")
+	}
+	if got, want := result.Config.WeCom.Bot.ListenAddress, ":8080"; got != want {
+		t.Fatalf("WeCom.Bot.ListenAddress = %q, want %q", got, want)
+	}
+}
+
+func TestLoadRejectsInvalidWeComSmartBot(t *testing.T) {
+	tests := []struct {
+		name string
+		bot  string
+		want string
+	}{
+		{name: "partial", bot: "    token: BotToken123\n", want: "必须同时配置"},
+		{name: "invalid address", bot: "    listen_address: 8080\n    token: BotToken123\n    encoding_aes_key: abcdefghijklmnopqrstuvwxyz0123456789ABCDEFG\n", want: "listen_address"},
+		{name: "invalid token", bot: "    listen_address: :8080\n    token: bot-token\n    encoding_aes_key: abcdefghijklmnopqrstuvwxyz0123456789ABCDEFG\n", want: "token"},
+		{name: "invalid aes key", bot: "    listen_address: :8080\n    token: BotToken123\n    encoding_aes_key: invalid\n", want: "encoding_aes_key"},
+	}
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			content := strings.Replace(
+				validConfig,
+				"  webhook_url: https://qyapi.weixin.qq.com/cgi-bin/webhook/send?key=test",
+				"  webhook_url: https://qyapi.weixin.qq.com/cgi-bin/webhook/send?key=test\n  bot:\n"+test.bot,
+				1,
+			)
+			path := filepath.Join(t.TempDir(), "config.yaml")
+			writeConfig(t, path, content)
+			_, err := Load(path)
+			if err == nil || !strings.Contains(err.Error(), test.want) {
+				t.Fatalf("Load() error = %v, want substring %q", err, test.want)
+			}
+		})
+	}
+}
+
 func TestLoadRejectsInvalidNotificationConfig(t *testing.T) {
 	tests := []struct {
 		name        string

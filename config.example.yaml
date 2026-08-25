@@ -12,6 +12,11 @@ accounts:
 # 不需要企业微信通知时，删除整个 wecom 配置块。
 wecom:
   webhook_url: https://qyapi.weixin.qq.com/cgi-bin/webhook/send?key=REPLACE_ME
+  # 可选：企业微信智能机器人使用 URL 回调接入。三个字段必须同时配置。
+  # bot:
+  #   listen_address: :8080
+  #   token: REPLACE_ME
+  #   encoding_aes_key: REPLACE_WITH_43_CHARACTER_ENCODING_AES_KEY
 
 # 不需要飞书通知时，删除整个 feishu 配置块。
 feishu:

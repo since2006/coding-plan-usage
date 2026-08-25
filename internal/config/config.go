@@ -2,9 +2,11 @@ package config
 
 import (
 	"bytes"
+	"encoding/base64"
 	"errors"
 	"fmt"
 	"io"
+	"net"
 	"net/url"
 	"os"
 	"path/filepath"
@@ -46,7 +48,18 @@ type Account struct {
 }
 
 type WeCom struct {
-	WebhookURL string `yaml:"webhook_url"`
+	WebhookURL string   `yaml:"webhook_url"`
+	Bot        WeComBot `yaml:"bot"`
+}
+
+type WeComBot struct {
+	ListenAddress  string `yaml:"listen_address"`
+	Token          string `yaml:"token"`
+	EncodingAESKey string `yaml:"encoding_aes_key"`
+}
+
+func (bot WeComBot) Enabled() bool {
+	return bot.ListenAddress != "" && bot.Token != "" && bot.EncodingAESKey != ""
 }
 
 type Feishu struct {
@@ -188,8 +201,14 @@ func (cfg *Config) validate() error {
 	}
 
 	cfg.WeCom.WebhookURL = strings.TrimSpace(cfg.WeCom.WebhookURL)
+	cfg.WeCom.Bot.ListenAddress = strings.TrimSpace(cfg.WeCom.Bot.ListenAddress)
+	cfg.WeCom.Bot.Token = strings.TrimSpace(cfg.WeCom.Bot.Token)
+	cfg.WeCom.Bot.EncodingAESKey = strings.TrimSpace(cfg.WeCom.Bot.EncodingAESKey)
 	cfg.Feishu.WebhookURL = strings.TrimSpace(cfg.Feishu.WebhookURL)
 	cfg.Feishu.Secret = strings.TrimSpace(cfg.Feishu.Secret)
+	if err := validateWeComBot(cfg.WeCom.Bot); err != nil {
+		return err
+	}
 	if cfg.Feishu.WebhookURL == "" && cfg.Feishu.Secret != "" {
 		return errors.New("配置 feishu.secret 时必须同时配置 feishu.webhook_url")
 	}
@@ -257,6 +276,36 @@ func (cfg *Config) validate() error {
 func validWebhookURL(value string) bool {
 	parsedURL, err := url.Parse(value)
 	return err == nil && parsedURL.Host != "" && (parsedURL.Scheme == "http" || parsedURL.Scheme == "https")
+}
+
+func validateWeComBot(bot WeComBot) error {
+	configured := bot.ListenAddress != "" || bot.Token != "" || bot.EncodingAESKey != ""
+	if !configured {
+		return nil
+	}
+	if bot.ListenAddress == "" || bot.Token == "" || bot.EncodingAESKey == "" {
+		return errors.New("wecom.bot.listen_address、token 和 encoding_aes_key 必须同时配置")
+	}
+	if _, _, err := net.SplitHostPort(bot.ListenAddress); err != nil {
+		return errors.New("wecom.bot.listen_address 必须是有效的监听地址，例如 :8080")
+	}
+	if len(bot.Token) > 32 {
+		return errors.New("wecom.bot.token 长度不能超过 32 个字符")
+	}
+	for _, character := range bot.Token {
+		if character < '0' || character > '9' {
+			if character < 'A' || character > 'Z' {
+				if character < 'a' || character > 'z' {
+					return errors.New("wecom.bot.token 只能包含英文字母和数字")
+				}
+			}
+		}
+	}
+	key, err := base64.RawStdEncoding.DecodeString(bot.EncodingAESKey)
+	if err != nil || len(key) != 32 {
+		return errors.New("wecom.bot.encoding_aes_key 必须是 43 位有效 EncodingAESKey")
+	}
+	return nil
 }
 
 func parseClock(value string) (int, int, error) {

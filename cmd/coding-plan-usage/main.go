@@ -2,9 +2,11 @@ package main
 
 import (
 	"context"
+	"errors"
 	"flag"
 	"fmt"
 	"log/slog"
+	"net/http"
 	"os"
 	"os/signal"
 	"strings"
@@ -69,9 +71,97 @@ func runDaemon(arguments []string) int {
 	}
 	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 	defer stop()
-	runtime.logger.Info("监控服务已启动", "poll_interval", runtime.config.PollInterval, "daily_at", strings.Join(runtime.config.Schedule.DailyAt, ","), "timezone", runtime.config.Schedule.Timezone)
-	if err := runtime.runner.Run(ctx, runtime.config.PollInterval); err != nil {
-		fmt.Fprintf(os.Stderr, "服务异常退出：%v\n", err)
+
+	botHandler, botServer, err := runtime.newWeComBotServer()
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "启动失败：%v\n", err)
+		return 1
+	}
+	runtime.logger.Info(
+		"监控服务已启动",
+		"poll_interval", runtime.config.PollInterval,
+		"daily_at", strings.Join(runtime.config.Schedule.DailyAt, ","),
+		"timezone", runtime.config.Schedule.Timezone,
+		"wecom_bot", botServer != nil,
+	)
+
+	runnerDone := make(chan error, 1)
+	go func() {
+		runnerDone <- runtime.runner.Run(ctx, runtime.config.PollInterval)
+	}()
+	var botServerDone chan error
+	if botServer != nil {
+		botServerDone = make(chan error, 1)
+		runtime.logger.Info("企业微信智能机器人回调服务已启动", "listen_address", botServer.Addr, "callback_path", wecom.BotCallbackPath)
+		go func() {
+			err := botServer.ListenAndServe()
+			if errors.Is(err, http.ErrServerClosed) {
+				err = nil
+			}
+			botServerDone <- err
+		}()
+	}
+
+	var serviceErr error
+	runnerFinished := false
+	botServerFinished := false
+	if botServerDone == nil {
+		select {
+		case <-ctx.Done():
+		case err := <-runnerDone:
+			runnerFinished = true
+			if ctx.Err() == nil {
+				serviceErr = err
+				if serviceErr == nil {
+					serviceErr = errors.New("监控调度意外停止")
+				}
+			}
+		}
+	} else {
+		select {
+		case <-ctx.Done():
+		case err := <-runnerDone:
+			runnerFinished = true
+			if ctx.Err() == nil {
+				serviceErr = err
+				if serviceErr == nil {
+					serviceErr = errors.New("监控调度意外停止")
+				}
+			}
+		case err := <-botServerDone:
+			botServerFinished = true
+			if ctx.Err() == nil {
+				serviceErr = err
+				if serviceErr == nil {
+					serviceErr = errors.New("企业微信智能机器人回调服务意外停止")
+				}
+			}
+		}
+	}
+	stop()
+
+	shutdownContext, cancelShutdown := context.WithTimeout(context.Background(), 15*time.Second)
+	defer cancelShutdown()
+	if botServer != nil {
+		if err := botServer.Shutdown(shutdownContext); err != nil && serviceErr == nil {
+			serviceErr = fmt.Errorf("停止企业微信智能机器人回调服务: %w", err)
+		}
+		if err := botHandler.Close(shutdownContext); err != nil && serviceErr == nil {
+			serviceErr = err
+		}
+		if !botServerFinished {
+			if err := <-botServerDone; err != nil && serviceErr == nil {
+				serviceErr = err
+			}
+		}
+	}
+	if !runnerFinished {
+		if err := <-runnerDone; err != nil && serviceErr == nil {
+			serviceErr = err
+		}
+	}
+	if serviceErr != nil {
+		fmt.Fprintf(os.Stderr, "服务异常退出：%v\n", serviceErr)
 		return 1
 	}
 	runtime.logger.Info("监控服务已停止")
@@ -179,7 +269,41 @@ func buildRuntime(configPath string) (*applicationRuntime, error) {
 	if err != nil {
 		return nil, err
 	}
-	return &applicationRuntime{config: cfg, runner: runner, logger: logger}, nil
+	return &applicationRuntime{
+		config: cfg,
+		runner: runner,
+		logger: logger,
+	}, nil
+}
+
+func (runtime *applicationRuntime) newWeComBotServer() (*wecom.BotHandler, *http.Server, error) {
+	bot := runtime.config.WeCom.Bot
+	if !bot.Enabled() {
+		return nil, nil, nil
+	}
+	query := func(ctx context.Context) (string, error) {
+		outcome, err := runtime.runner.Execute(ctx, app.ModeDryRun)
+		if err != nil {
+			return "", err
+		}
+		return strings.Join(outcome.Messages, "\n\n---\n\n"), nil
+	}
+	handler, err := wecom.NewBotHandler(bot.Token, bot.EncodingAESKey, query, nil, runtime.logger)
+	if err != nil {
+		return nil, nil, err
+	}
+	mux := http.NewServeMux()
+	mux.Handle(wecom.BotCallbackPath, handler)
+	server := &http.Server{
+		Addr:              bot.ListenAddress,
+		Handler:           mux,
+		ReadHeaderTimeout: 5 * time.Second,
+		ReadTimeout:       10 * time.Second,
+		WriteTimeout:      10 * time.Second,
+		IdleTimeout:       60 * time.Second,
+		MaxHeaderBytes:    16 << 10,
+	}
+	return handler, server, nil
 }
 
 func printWarnings(warnings []string) {
