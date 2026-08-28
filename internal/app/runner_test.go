@@ -44,6 +44,12 @@ type memoryStore struct {
 	err   error
 }
 
+type fakeAlertRecorder struct {
+	calls int
+}
+
+func (recorder *fakeAlertRecorder) RecordAlert() { recorder.calls++ }
+
 func (store *memoryStore) Load() (persist.State, error) { return store.value, nil }
 func (store *memoryStore) Save(value persist.State) error {
 	if store.err != nil {
@@ -209,6 +215,68 @@ func TestRunnerDoesNotPersistAlertWhenWebhookFails(t *testing.T) {
 	}
 	if len(store.value.Alerts) != 0 || store.saves != 0 {
 		t.Fatalf("state persisted after failure: %+v, saves=%d", store.value, store.saves)
+	}
+}
+
+func TestRunnerRecordsOnlySuccessfulAlertNotifications(t *testing.T) {
+	now := time.Date(2026, 8, 24, 8, 0, 0, 0, time.UTC)
+	collector := &fakeCollector{usages: []model.AccountUsage{{
+		Account: "high",
+		Periods: []model.Period{{Level: model.LevelSession, Percent: 99, ResetTimestamp: now.Add(5 * time.Hour).Unix()}},
+	}}}
+	recorder := &fakeAlertRecorder{}
+	sender := &fakeSender{}
+	runner, err := NewRunner(
+		RunnerConfig{
+			Location:   time.UTC,
+			Threshold:  90,
+			DailyTimes: []DailyTime{{Hour: 9}},
+			Stats:      recorder,
+		},
+		collector,
+		sender,
+		report.NewRenderer(time.UTC, 90),
+		&memoryStore{value: persist.New()},
+		slog.New(slog.NewTextHandler(io.Discard, nil)),
+		func() time.Time { return now },
+	)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	if _, err := runner.Execute(context.Background(), ModePoll); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := runner.Execute(context.Background(), ModePoll); err != nil {
+		t.Fatal(err)
+	}
+	if recorder.calls != 1 {
+		t.Fatalf("recorded alerts = %d, want 1", recorder.calls)
+	}
+
+	failedRecorder := &fakeAlertRecorder{}
+	failedRunner, err := NewRunner(
+		RunnerConfig{
+			Location:   time.UTC,
+			Threshold:  90,
+			DailyTimes: []DailyTime{{Hour: 9}},
+			Stats:      failedRecorder,
+		},
+		collector,
+		&fakeSender{err: errors.New("webhook failed")},
+		report.NewRenderer(time.UTC, 90),
+		&memoryStore{value: persist.New()},
+		slog.New(slog.NewTextHandler(io.Discard, nil)),
+		func() time.Time { return now },
+	)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := failedRunner.Execute(context.Background(), ModePoll); err == nil {
+		t.Fatal("expected webhook error")
+	}
+	if failedRecorder.calls != 0 {
+		t.Fatalf("recorded failed alerts = %d, want 0", failedRecorder.calls)
 	}
 }
 

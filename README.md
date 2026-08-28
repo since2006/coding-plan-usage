@@ -15,6 +15,7 @@
 - 企业微信使用 Markdown V2，飞书使用交互式消息卡片；均按平台大小限制自动拆分
 - 企业微信、飞书可任选其一，也可同时推送；飞书支持可选的签名校验
 - 支持企业微信智能机器人 URL 回调，成员发送消息即可异步查询最新用量
+- 提供内存型状态页，展示进程启动时间、当天预警次数和主动查询次数
 - 支持单次推送、只读预览和纯配置校验
 - 提供非 root Docker 镜像与 Compose 配置
 
@@ -72,9 +73,12 @@ state:
 
 ```text
 GET/POST /api/v1/vendor/wecom/bot/callback
+GET /status
 ```
 
 在企业微信智能机器人管理页选择“使用 URL 回调”，公网 URL 填写 `https://你的域名/api/v1/vendor/wecom/bot/callback`，Token 和 EncodingAESKey 必须与配置一致。服务会完成 GET 验证、POST 验签与解密；用户发送消息后，回调先快速返回，再通过企业微信提供的一次性 `response_url` 异步回复最新用量。重复的 `msgid` 在两小时内只处理一次。公网 HTTPS、域名证书和反向代理由部署环境提供。
+
+状态页复用 `wecom.bot.listen_address`，返回便于查看和采集的纯文本：`alerts_today` 是当天成功发出的阈值预警批次数，`active_queries_today` 是去重后实际启动的机器人查询次数。“当天”按 `schedule.timezone` 计算并在跨日后自动归零。统计只保存在进程内存中，因此服务重启后会从 0 开始；它适合运行状态观测，不作为审计数据。生产环境建议只允许内网或受信任的反向代理访问 `/status`。
 
 `schedule.daily_at` 必须是 `"HH:MM"` 时刻列表，使用 24 小时制；列表不能为空，时刻不能重复。
 

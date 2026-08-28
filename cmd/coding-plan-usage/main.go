@@ -20,6 +20,7 @@ import (
 	"coding-plan-usage/internal/notify"
 	"coding-plan-usage/internal/report"
 	"coding-plan-usage/internal/state"
+	statuspage "coding-plan-usage/internal/status"
 	"coding-plan-usage/internal/volc"
 	"coding-plan-usage/internal/wecom"
 	"coding-plan-usage/internal/zhipu"
@@ -92,7 +93,7 @@ func runDaemon(arguments []string) int {
 	var botServerDone chan error
 	if botServer != nil {
 		botServerDone = make(chan error, 1)
-		runtime.logger.Info("企业微信智能机器人回调服务已启动", "listen_address", botServer.Addr, "callback_path", wecom.BotCallbackPath)
+		runtime.logger.Info("企业微信智能机器人回调服务已启动", "listen_address", botServer.Addr, "callback_path", wecom.BotCallbackPath, "status_path", statuspage.Path)
 		go func() {
 			err := botServer.ListenAndServe()
 			if errors.Is(err, http.ErrServerClosed) {
@@ -232,6 +233,7 @@ func runValidate(arguments []string) int {
 type applicationRuntime struct {
 	config config.Config
 	runner *app.Runner
+	status *statuspage.Counter
 	logger *slog.Logger
 }
 
@@ -257,6 +259,7 @@ func buildRuntime(configPath string) (*applicationRuntime, error) {
 	}
 	sender := notify.New(targets...)
 	store := state.NewStore(cfg.State.File)
+	statusCounter := statuspage.New(cfg.Location, time.Now)
 	dailyTimes := make([]app.DailyTime, len(cfg.DailyTimes))
 	for index, dailyTime := range cfg.DailyTimes {
 		dailyTimes[index] = app.DailyTime{Hour: dailyTime.Hour, Minute: dailyTime.Minute}
@@ -265,6 +268,7 @@ func buildRuntime(configPath string) (*applicationRuntime, error) {
 		Location:   cfg.Location,
 		Threshold:  cfg.Alert.ThresholdPercent,
 		DailyTimes: dailyTimes,
+		Stats:      statusCounter,
 	}, usageCollector, sender, renderer, store, logger, time.Now)
 	if err != nil {
 		return nil, err
@@ -272,6 +276,7 @@ func buildRuntime(configPath string) (*applicationRuntime, error) {
 	return &applicationRuntime{
 		config: cfg,
 		runner: runner,
+		status: statusCounter,
 		logger: logger,
 	}, nil
 }
@@ -282,6 +287,7 @@ func (runtime *applicationRuntime) newWeComBotServer() (*wecom.BotHandler, *http
 		return nil, nil, nil
 	}
 	query := func(ctx context.Context) (string, error) {
+		runtime.status.RecordActiveQuery()
 		outcome, err := runtime.runner.Execute(ctx, app.ModeDryRun)
 		if err != nil {
 			return "", err
@@ -294,6 +300,7 @@ func (runtime *applicationRuntime) newWeComBotServer() (*wecom.BotHandler, *http
 	}
 	mux := http.NewServeMux()
 	mux.Handle(wecom.BotCallbackPath, handler)
+	mux.Handle(statuspage.Path, runtime.status)
 	server := &http.Server{
 		Addr:              bot.ListenAddress,
 		Handler:           mux,

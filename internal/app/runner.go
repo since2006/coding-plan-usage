@@ -27,6 +27,10 @@ type StateStore interface {
 	Save(value persist.State) error
 }
 
+type AlertRecorder interface {
+	RecordAlert()
+}
+
 type Runner struct {
 	collector  Collector
 	sender     Sender
@@ -38,6 +42,7 @@ type Runner struct {
 	threshold  float64
 	dailyTimes []DailyTime
 	now        func() time.Time
+	stats      AlertRecorder
 
 	mutex sync.Mutex
 }
@@ -46,6 +51,7 @@ type RunnerConfig struct {
 	Location   *time.Location
 	Threshold  float64
 	DailyTimes []DailyTime
+	Stats      AlertRecorder
 }
 
 type DailyTime struct {
@@ -110,6 +116,7 @@ func NewRunner(
 		threshold:  configuration.Threshold,
 		dailyTimes: dailyTimes,
 		now:        now,
+		stats:      configuration.Stats,
 	}, nil
 }
 
@@ -172,6 +179,9 @@ func (runner *Runner) Execute(ctx context.Context, mode ExecuteMode) (Outcome, e
 		return outcome, err
 	}
 	outcome.Sent = true
+	if kind == report.KindAlert && runner.stats != nil {
+		runner.stats.RecordAlert()
+	}
 
 	persist.MarkHighPeriods(&runner.state, usages, runner.threshold, now)
 	if kind == report.KindDaily {
