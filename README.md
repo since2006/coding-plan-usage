@@ -74,11 +74,14 @@ state:
 ```text
 GET/POST /api/v1/vendor/wecom/bot/callback
 GET /status
+GET /usage
 ```
 
 在企业微信智能机器人管理页选择“使用 URL 回调”，公网 URL 填写 `https://你的域名/api/v1/vendor/wecom/bot/callback`，Token 和 EncodingAESKey 必须与配置一致。服务会完成 GET 验证、POST 验签与解密；用户发送消息后，回调先快速返回，再通过企业微信提供的一次性 `response_url` 异步回复最新用量。重复的 `msgid` 在两小时内只处理一次。公网 HTTPS、域名证书和反向代理由部署环境提供。
 
-状态页复用 `wecom.bot.listen_address`，返回便于查看和采集的纯文本：`alerts_today` 是当天成功发出的阈值预警批次数，`active_queries_today` 是去重后实际启动的机器人查询次数。“当天”按 `schedule.timezone` 计算并在跨日后自动归零。统计只保存在进程内存中，因此服务重启后会从 0 开始；它适合运行状态观测，不作为审计数据。生产环境建议只允许内网或受信任的反向代理访问 `/status`。
+状态页复用 `wecom.bot.listen_address`，返回便于查看和采集的纯文本：`alerts_today` 是当天成功发出的阈值预警批次数，`active_queries_today` 是去重后实际启动的主动查询次数。“当天”按 `schedule.timezone` 计算并在跨日后自动归零。统计只保存在进程内存中，因此服务重启后会从 0 开始；它适合运行状态观测，不作为审计数据。
+
+`GET /usage` 会实时查询各账号并以 Markdown 返回当前用量汇总，不发送群通知，也不修改预警去重状态；每次调用会计入 `active_queries_today`。生产环境建议只允许内网或受信任且具有访问控制的反向代理访问 `/status` 和 `/usage`，尤其不要将包含账号名称与用量的 `/usage` 直接暴露到公网。
 
 `schedule.daily_at` 必须是 `"HH:MM"` 时刻列表，使用 24 小时制；列表不能为空，时刻不能重复。
 

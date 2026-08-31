@@ -21,6 +21,7 @@ import (
 	"coding-plan-usage/internal/report"
 	"coding-plan-usage/internal/state"
 	statuspage "coding-plan-usage/internal/status"
+	usagepage "coding-plan-usage/internal/usage"
 	"coding-plan-usage/internal/volc"
 	"coding-plan-usage/internal/wecom"
 	"coding-plan-usage/internal/zhipu"
@@ -93,7 +94,7 @@ func runDaemon(arguments []string) int {
 	var botServerDone chan error
 	if botServer != nil {
 		botServerDone = make(chan error, 1)
-		runtime.logger.Info("企业微信智能机器人回调服务已启动", "listen_address", botServer.Addr, "callback_path", wecom.BotCallbackPath, "status_path", statuspage.Path)
+		runtime.logger.Info("企业微信智能机器人回调服务已启动", "listen_address", botServer.Addr, "callback_path", wecom.BotCallbackPath, "status_path", statuspage.Path, "usage_path", usagepage.Path)
 		go func() {
 			err := botServer.ListenAndServe()
 			if errors.Is(err, http.ErrServerClosed) {
@@ -294,6 +295,10 @@ func (runtime *applicationRuntime) newWeComBotServer() (*wecom.BotHandler, *http
 		}
 		return strings.Join(outcome.Messages, "\n\n---\n\n"), nil
 	}
+	usageHandler, err := usagepage.NewHandler(query, runtime.logger)
+	if err != nil {
+		return nil, nil, err
+	}
 	handler, err := wecom.NewBotHandler(bot.Token, bot.EncodingAESKey, query, nil, runtime.logger)
 	if err != nil {
 		return nil, nil, err
@@ -301,12 +306,13 @@ func (runtime *applicationRuntime) newWeComBotServer() (*wecom.BotHandler, *http
 	mux := http.NewServeMux()
 	mux.Handle(wecom.BotCallbackPath, handler)
 	mux.Handle(statuspage.Path, runtime.status)
+	mux.Handle(usagepage.Path, usageHandler)
 	server := &http.Server{
 		Addr:              bot.ListenAddress,
 		Handler:           mux,
 		ReadHeaderTimeout: 5 * time.Second,
 		ReadTimeout:       10 * time.Second,
-		WriteTimeout:      10 * time.Second,
+		WriteTimeout:      35 * time.Second,
 		IdleTimeout:       60 * time.Second,
 		MaxHeaderBytes:    16 << 10,
 	}
