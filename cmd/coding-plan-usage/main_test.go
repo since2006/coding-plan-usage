@@ -90,6 +90,9 @@ func TestWeComBotServerExposesUsagePage(t *testing.T) {
 	if response.Code != http.StatusOK {
 		t.Fatalf("status = %d, body = %q", response.Code, response.Body.String())
 	}
+	if got := response.Header().Get("Content-Type"); got != "text/html; charset=utf-8" {
+		t.Fatalf("Content-Type = %q", got)
+	}
 	if body := response.Body.String(); !strings.Contains(body, "Coding Plan 用量汇总") || !strings.Contains(body, "account-a") || !strings.Contains(body, "25.0%") {
 		t.Fatalf("usage body = %q", body)
 	}
