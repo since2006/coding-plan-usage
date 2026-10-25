@@ -123,8 +123,8 @@ func TestRunnerSeparatesOneHighAccountFromAllAccountStatistics(t *testing.T) {
 	if strings.Count(message, "- **high**：") != 2 || strings.Count(message, "normal") != 1 || strings.Contains(message, "| 账号 |") || strings.Contains(message, "⚠️") {
 		t.Fatalf("alert must show the triggering account once in each section and all other accounts once:\n%s", message)
 	}
-	if strings.Count(message, "\n  - 重置：5 小时（04时00分钟），周（6天00时00分钟），月（15天00时00分钟）") != 2 {
-		t.Fatalf("high-period reset times must be grouped on a separate line:\n%s", message)
+	if strings.Count(message, "- **high**：5 小时 **91.0%** *(4h 0m)*，周 **92.0%** *(6d 0h 0m)*，月 **93.0%** *(15d 0h 0m)*\n") != 2 {
+		t.Fatalf("high-period reset times must follow their percentages:\n%s", message)
 	}
 }
 
@@ -296,7 +296,7 @@ func TestRunnerDryRunDoesNotSendOrSave(t *testing.T) {
 	}
 }
 
-func TestRunnerVerboseDryRunRendersResetTimesWithoutSendingOrSaving(t *testing.T) {
+func TestRunnerVerboseDryRunRendersRemainingTimesWithoutSendingOrSaving(t *testing.T) {
 	location := time.UTC
 	now := time.Date(2026, 8, 24, 12, 0, 0, 0, location)
 	resetAt := now.Add(90 * time.Minute)
@@ -311,7 +311,7 @@ func TestRunnerVerboseDryRunRendersResetTimesWithoutSendingOrSaving(t *testing.T
 	if err != nil || len(outcome.Messages) != 1 {
 		t.Fatalf("outcome = %+v, err = %v", outcome, err)
 	}
-	if want := "  - 5 小时：20.0%，重置于 2026-08-24 13:30:00（01时30分钟后）"; !strings.Contains(outcome.Messages[0], want) {
+	if want := "- **a**：5 小时 20.0% *(1h 30m)*"; !strings.Contains(outcome.Messages[0], want) {
 		t.Fatalf("verbose message does not contain %q:\n%s", want, outcome.Messages[0])
 	}
 	if sender.calls != 0 || store.saves != 0 {

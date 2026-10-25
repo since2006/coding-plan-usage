@@ -1,6 +1,6 @@
 # Coding Plan 多平台用量监控
 
-定时查询多个火山方舟和智谱 GLM Coding Plan 账号的额度快照，并通过企业微信群机器人、飞书群自定义机器人发送汇总。程序统一展示 `session/5小时`、`weekly` 和模型 `monthly` 额度的已用百分比；只有周期严格超过 `alert.threshold_percent` 时才显示距重置剩余时间（如 `15天08时30分钟`），并且只展示每个账号实际返回的周期。
+定时查询多个火山方舟和智谱 GLM Coding Plan 账号的额度快照，并通过企业微信群机器人、飞书群自定义机器人发送汇总。程序统一展示 `session/5小时`、`weekly` 和模型 `monthly` 额度的已用百分比；只有周期严格超过 `alert.threshold_percent` 时才在该周期用量后显示距重置剩余时间（如 `5 小时 95.2% (42m)`、`月 100.0% (15d 8h 30m)`），并且只展示每个账号实际返回的周期。
 
 ## 功能
 
@@ -81,7 +81,7 @@ GET /usage
 
 状态页复用 `wecom.bot.listen_address`，返回便于查看和采集的纯文本：`alerts_today` 是当天成功发出的阈值预警批次数，`active_queries_today` 是去重后实际启动的主动查询次数。“当天”按 `schedule.timezone` 计算并在跨日后自动归零。统计只保存在进程内存中，因此服务重启后会从 0 开始；它适合运行状态观测，不作为审计数据。
 
-`GET /usage` 会实时查询各账号并返回适配桌面端、移动端和系统深浅色模式的 HTML 用量汇总；`GET /usage?format=markdown` 可获取原始 Markdown。追加 `verbose=1`（也接受 `true`，或只写 `?verbose`）会切换为详情视图：每个账号的 5 小时、周、月窗口分行展示，并列出各窗口的具体重置时间与剩余时长（不受预警阈值限制）以及平台返回的数据更新时间，例如 `GET /usage?verbose=1` 或 `GET /usage?format=markdown&verbose=1`。查询不发送群通知，也不修改预警去重状态；每次有效调用会计入 `active_queries_today`。生产环境建议只允许内网或受信任且具有访问控制的反向代理访问 `/status` 和 `/usage`，尤其不要将包含账号名称与用量的 `/usage` 直接暴露到公网。
+`GET /usage` 会实时查询各账号并返回适配桌面端、移动端和系统深浅色模式的 HTML 用量汇总；`GET /usage?format=markdown` 可获取原始 Markdown。追加 `verbose=1`（也接受 `true`，或只写 `?verbose`）会切换为详情视图：每个窗口的用量后都附上距下次重置的剩余时长（不再只限于超过预警阈值的窗口），如 `5 小时 1.9% (3h 15m)，周 49.1% (13h 20m)，月 49.0% (1d 13h 20m)`，HTML 页面中剩余时长以较小的浅色字体显示，例如 `GET /usage?verbose=1` 或 `GET /usage?format=markdown&verbose=1`。查询不发送群通知，也不修改预警去重状态；每次有效调用会计入 `active_queries_today`。生产环境建议只允许内网或受信任且具有访问控制的反向代理访问 `/status` 和 `/usage`，尤其不要将包含账号名称与用量的 `/usage` 直接暴露到公网。
 
 `schedule.daily_at` 必须是 `"HH:MM"` 时刻列表，使用 24 小时制；列表不能为空，时刻不能重复。
 

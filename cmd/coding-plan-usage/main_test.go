@@ -52,12 +52,13 @@ func TestWeComBotServerExposesStatusPage(t *testing.T) {
 
 func TestWeComBotServerExposesUsagePage(t *testing.T) {
 	now := time.Date(2026, 8, 31, 12, 0, 0, 0, time.UTC)
+	resetAt := now.Add(3*time.Hour + 15*time.Minute)
 	counter := statuspage.New(time.UTC, func() time.Time { return now })
 	runner, err := app.NewRunner(
 		app.RunnerConfig{Location: time.UTC, Threshold: 90, DailyTimes: []app.DailyTime{{Hour: 9}}},
 		staticCollector{usages: []model.AccountUsage{{
 			Account: "account-a",
-			Periods: []model.Period{{Level: model.LevelSession, Percent: 25}},
+			Periods: []model.Period{{Level: model.LevelSession, Percent: 25, ResetAt: &resetAt}},
 		}}},
 		unusedSender{},
 		report.NewRenderer(time.UTC, 90),
@@ -93,7 +94,7 @@ func TestWeComBotServerExposesUsagePage(t *testing.T) {
 	if got := response.Header().Get("Content-Type"); got != "text/html; charset=utf-8" {
 		t.Fatalf("Content-Type = %q", got)
 	}
-	if body := response.Body.String(); !strings.Contains(body, "Coding Plan 用量汇总") || !strings.Contains(body, "account-a") || !strings.Contains(body, "25.0%") {
+	if body := response.Body.String(); !strings.Contains(body, "Coding Plan 用量汇总") || !strings.Contains(body, "account-a") || !strings.Contains(body, "25.0%") || strings.Contains(body, "3h 15m") {
 		t.Fatalf("usage body = %q", body)
 	}
 	if got := counter.Snapshot().ActiveQueries; got != 1 {
@@ -105,7 +106,7 @@ func TestWeComBotServerExposesUsagePage(t *testing.T) {
 	if response.Code != http.StatusOK {
 		t.Fatalf("verbose status = %d, body = %q", response.Code, response.Body.String())
 	}
-	if body := response.Body.String(); !strings.Contains(body, "- **account-a**\n  - 5 小时：25.0%，重置时间未知") {
+	if body := response.Body.String(); !strings.Contains(body, "- **account-a**：5 小时 25.0% *(3h 15m)*\n") {
 		t.Fatalf("verbose usage body = %q", body)
 	}
 	if got := counter.Snapshot().ActiveQueries; got != 2 {

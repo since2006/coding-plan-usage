@@ -88,7 +88,7 @@ func TestHandlerPassesVerboseToQueryAndKeepsItInLinks(t *testing.T) {
 			var gotVerbose bool
 			handler, err := NewHandler(func(_ context.Context, verbose bool) (string, error) {
 				gotVerbose = verbose
-				return "# Coding Plan 用量汇总\n- **account-a**\n  - 5 小时：25.0%，重置于 2026-09-01 17:00:00（05时00分钟后）", nil
+				return "# Coding Plan 用量汇总\n- **account-a**：5 小时 25.0% *(3h 15m)*，周 **92.0%** *(1d 13h 20m)*", nil
 			}, nil)
 			if err != nil {
 				t.Fatal(err)
@@ -105,7 +105,7 @@ func TestHandlerPassesVerboseToQueryAndKeepsItInLinks(t *testing.T) {
 			}
 			body := response.Body.String()
 			for _, want := range []string{
-				"重置于 2026-09-01 17:00:00",
+				"5 小时 25.0% <em>(3h 15m)</em>，周 <strong>92.0%</strong> <em>(1d 13h 20m)</em>",
 				`href="/usage?verbose=1">刷新`,
 				`href="/usage">简洁视图`,
 				`href="/usage?format=markdown&amp;verbose=1"`,

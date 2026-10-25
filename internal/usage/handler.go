@@ -95,6 +95,12 @@ const pageTemplate = `<!doctype html>
     li { margin: 8px 0; }
     hr { margin: 30px 0; border: 0; border-top: 1px solid var(--border); }
     strong { font-weight: 700; }
+    em {
+      color: var(--muted);
+      font-size: .85em;
+      font-style: normal;
+      white-space: nowrap;
+    }
     @media (max-width: 600px) {
       main { width: 100%; margin: 0; padding: 20px; border: 0; border-radius: 0; box-shadow: none; }
     }

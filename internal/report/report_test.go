@@ -37,7 +37,7 @@ func TestRenderPreservesNonLimitOrderAndEscapesUserText(t *testing.T) {
 	if strings.Contains(message, `**90.0%**`) {
 		t.Fatal("threshold must be strictly greater than 90")
 	}
-	if !strings.Contains(message, "- **&lt;high\\_\\*&gt;**：5 小时 90.0%，月 **90.1%**\n  - 重置：月（1天00时00分钟）") {
+	if !strings.Contains(message, "- **&lt;high\\_\\*&gt;**：5 小时 90.0%，月 **90.1%** *(1d 0h 0m)*\n") {
 		t.Fatalf("compact account summary missing:\n%s", message)
 	}
 	if strings.Contains(message, "⚠️") || strings.Contains(message, "**1. &lt;high") {
@@ -46,7 +46,7 @@ func TestRenderPreservesNonLimitOrderAndEscapesUserText(t *testing.T) {
 	if strings.Contains(message, "周期 已用") {
 		t.Fatalf("format explanation should not be rendered:\n%s", message)
 	}
-	if strings.Contains(message, "重置：5 小时") || strings.Contains(message, "重置：周") {
+	if strings.Contains(message, "周 20.0% *(") || strings.Contains(message, "\n  - ") {
 		t.Fatalf("reset time should be hidden at or below the configured threshold:\n%s", message)
 	}
 	if strings.Contains(message, "| 账号 |") || strings.Contains(message, "无数据") || strings.Contains(message, "暂无活跃窗口") {
@@ -155,7 +155,7 @@ func TestRenderPutsReachedLimitBeforeNearerReset(t *testing.T) {
 	if reachedIndex < 0 || belowIndex < reachedIndex {
 		t.Fatalf("account at 100%% must come first:\n%s", message)
 	}
-	if !strings.Contains(message, "月 **100.0%**\n  - 重置：月（15天00时00分钟）") || strings.Contains(message, "5 小时（30分钟）") {
+	if !strings.Contains(message, "月 **100.0%** *(15d 0h 0m)*") || strings.Contains(message, "(30m)") {
 		t.Fatalf("reset time must only be shown above the configured threshold:\n%s", message)
 	}
 }
@@ -216,25 +216,25 @@ func TestRenderSplitsLargeReportAtAccountBoundaries(t *testing.T) {
 	}
 }
 
-func TestRenderVerboseListsEveryPeriodWithResetTime(t *testing.T) {
+func TestRenderVerboseAppendsRemainingTimeToEveryPeriod(t *testing.T) {
 	location, _ := time.LoadLocation("Asia/Shanghai")
 	renderer := NewRenderer(location, 90)
 	generatedAt := time.Date(2026, 9, 1, 12, 0, 0, 0, location)
-	sessionReset := generatedAt.Add(80 * time.Minute)
-	weeklyReset := time.Date(2026, 9, 7, 0, 0, 0, 0, location)
-	expiredReset := generatedAt.Add(-time.Minute)
-	updatedAt := generatedAt.Add(-5 * time.Minute)
+	at := func(remaining time.Duration) *time.Time {
+		resetAt := generatedAt.Add(remaining)
+		return &resetAt
+	}
 	usages := []model.AccountUsage{
-		{
-			Account:   "account-a",
-			UpdatedAt: &updatedAt,
-			Periods: []model.Period{
-				{Level: model.LevelMonthly, Percent: 10},
-				{Level: model.LevelSession, Percent: 92, ResetAt: &sessionReset},
-				{Level: model.LevelWeekly, Percent: 40, ResetAt: &weeklyReset},
-			},
-		},
-		{Account: "expired", Periods: []model.Period{{Level: model.LevelSession, Percent: 0, ResetAt: &expiredReset}}},
+		{Account: "火山-3261", Periods: []model.Period{
+			{Level: model.LevelMonthly, Percent: 49, ResetAt: at(37*time.Hour + 20*time.Minute)},
+			{Level: model.LevelSession, Percent: 1.9, ResetAt: at(3*time.Hour + 15*time.Minute)},
+			{Level: model.LevelWeekly, Percent: 49.1, ResetAt: at(13*time.Hour + 20*time.Minute)},
+		}},
+		{Account: "high", Periods: []model.Period{
+			{Level: model.LevelSession, Percent: 92, ResetAt: at(45 * time.Minute)},
+			{Level: model.LevelMonthly, Percent: 10},
+		}},
+		{Account: "expired", Periods: []model.Period{{Level: model.LevelSession, Percent: 0, ResetAt: at(-time.Minute)}}},
 		{Account: "empty"},
 		{Account: "failed", Error: "AccessDenied"},
 	}
@@ -245,13 +245,9 @@ func TestRenderVerboseListsEveryPeriodWithResetTime(t *testing.T) {
 	}
 	want := "# Coding Plan 用量汇总\n" +
 		"> 统计时间：2026-09-01 12:00:00 CST\n\n" +
-		"- **account-a**\n" +
-		"  - 5 小时：**92.0%**，重置于 2026-09-01 13:20:00（01时20分钟后）\n" +
-		"  - 周：40.0%，重置于 2026-09-07 00:00:00（5天12时00分钟后）\n" +
-		"  - 月：10.0%，重置时间未知\n" +
-		"  - 数据更新时间：2026-09-01 11:55:00\n" +
-		"- **expired**\n" +
-		"  - 5 小时：0.0%，重置于 2026-09-01 11:59:00（已重置）\n" +
+		"- **火山-3261**：5 小时 1.9% *(3h 15m)*，周 49.1% *(13h 20m)*，月 49.0% *(1d 13h 20m)*\n" +
+		"- **high**：5 小时 **92.0%** *(45m)*，月 10.0%\n" +
+		"- **expired**：5 小时 0.0% *(已重置)*\n" +
 		"- **empty**：暂无用量数据\n" +
 		"- ❌ **failed**：查询失败（AccessDenied）"
 	if messages[0] != want {
@@ -290,10 +286,11 @@ func TestFormatRemainingTime(t *testing.T) {
 		remaining time.Duration
 		want      string
 	}{
-		{name: "days", remaining: 15*24*time.Hour + 8*time.Hour + 30*time.Minute, want: "15天08时30分钟"},
-		{name: "hours", remaining: 8*time.Hour + 5*time.Minute, want: "08时05分钟"},
-		{name: "minutes", remaining: 30 * time.Minute, want: "30分钟"},
-		{name: "round seconds up", remaining: 10 * time.Second, want: "1分钟"},
+		{name: "days", remaining: 24*time.Hour + 13*time.Hour + 20*time.Minute, want: "1d 13h 20m"},
+		{name: "days keep zero hours", remaining: 2*24*time.Hour + 5*time.Minute, want: "2d 0h 5m"},
+		{name: "hours", remaining: 3*time.Hour + 15*time.Minute, want: "3h 15m"},
+		{name: "minutes", remaining: 30 * time.Minute, want: "30m"},
+		{name: "round seconds up", remaining: 10 * time.Second, want: "1m"},
 		{name: "expired", remaining: -time.Second, want: "已重置"},
 	}
 	for _, test := range tests {

@@ -14,7 +14,6 @@ import (
 const (
 	weComMarkdownLimit = 4096
 	chunkSafetyLimit   = 3900
-	detailTimeLayout   = "2006-01-02 15:04:05"
 )
 
 var periodLabels = map[string]string{
@@ -47,18 +46,14 @@ func NewRenderer(location *time.Location, threshold float64) *Renderer {
 
 func (renderer *Renderer) Render(kind Kind, usages []model.AccountUsage, generatedAt time.Time) []string {
 	sorted := renderer.sortUsages(usages)
-	return renderer.renderSections(kind, []section{{entries: renderer.accountEntries(sorted, generatedAt)}}, generatedAt)
+	return renderer.renderSections(kind, []section{{entries: renderer.accountEntries(sorted, generatedAt, false)}}, generatedAt)
 }
 
-// RenderVerbose keeps the ordering of Render, but lists every period on its own
-// line with the absolute reset time regardless of the alert threshold.
+// RenderVerbose keeps the ordering of Render, but appends the remaining time to
+// every period instead of only those above the alert threshold.
 func (renderer *Renderer) RenderVerbose(kind Kind, usages []model.AccountUsage, generatedAt time.Time) []string {
 	sorted := renderer.sortUsages(usages)
-	entries := make([]string, 0, len(sorted))
-	for _, usage := range sorted {
-		entries = append(entries, renderer.verboseAccountEntry(usage, generatedAt))
-	}
-	return renderer.renderSections(kind, []section{{entries: entries}}, generatedAt)
+	return renderer.renderSections(kind, []section{{entries: renderer.accountEntries(sorted, generatedAt, true)}}, generatedAt)
 }
 
 // RenderAlert separates the accounts that triggered this notification from the
@@ -88,20 +83,20 @@ func (renderer *Renderer) RenderAlert(usages []model.AccountUsage, alertedAccoun
 	sections := []section{
 		{
 			title:   fmt.Sprintf("当前检测到的高用量账号（%d 个）", len(highUsages)),
-			entries: renderer.accountEntries(highUsages, generatedAt),
+			entries: renderer.accountEntries(highUsages, generatedAt, false),
 		},
 		{
 			title:   "全部账号用量统计",
-			entries: renderer.accountEntries(sorted, generatedAt),
+			entries: renderer.accountEntries(sorted, generatedAt, false),
 		},
 	}
 	return renderer.renderSections(KindAlert, sections, generatedAt)
 }
 
-func (renderer *Renderer) accountEntries(usages []model.AccountUsage, generatedAt time.Time) []string {
+func (renderer *Renderer) accountEntries(usages []model.AccountUsage, generatedAt time.Time, verbose bool) []string {
 	entries := make([]string, 0, len(usages))
 	for _, usage := range usages {
-		entries = append(entries, renderer.accountEntry(usage, generatedAt))
+		entries = append(entries, renderer.accountEntry(usage, generatedAt, verbose))
 	}
 	return entries
 }
@@ -191,7 +186,7 @@ func (renderer *Renderer) header(kind Kind, generatedAt time.Time, suffix string
 	)
 }
 
-func (renderer *Renderer) accountEntry(usage model.AccountUsage, generatedAt time.Time) string {
+func (renderer *Renderer) accountEntry(usage model.AccountUsage, generatedAt time.Time, verbose bool) string {
 	name := escapeInlineText(truncateUTF8(usage.Account, 120))
 	if usage.Error != "" {
 		errorMessage := escapeInlineText(truncateUTF8(usage.Error, 240))
@@ -200,54 +195,22 @@ func (renderer *Renderer) accountEntry(usage model.AccountUsage, generatedAt tim
 
 	account := "**" + name + "**"
 	periods := make([]string, 0, len(model.CanonicalLevels))
-	resets := make([]string, 0, len(model.CanonicalLevels))
 	for _, level := range model.CanonicalLevels {
 		period, exists := usage.Period(level)
 		if !exists {
 			continue
 		}
-		label := periodLabels[level]
-		periodSummary := label + " " + renderer.formatPercent(period.Percent)
-		if period.Percent > renderer.threshold && period.ResetAt != nil {
-			resets = append(resets, label+"（"+formatRemainingTime(period.ResetAt.Sub(generatedAt))+"）")
+		periodSummary := periodLabels[level] + " " + renderer.formatPercent(period.Percent)
+		if period.ResetAt != nil && (verbose || period.Percent > renderer.threshold) {
+			// 单个星号渲染为斜体，用量页面会将其显示为更小、更淡的辅助信息。
+			periodSummary += " *(" + formatRemainingTime(period.ResetAt.Sub(generatedAt)) + ")*"
 		}
 		periods = append(periods, periodSummary)
 	}
 	if len(periods) == 0 {
 		return fmt.Sprintf("- %s：暂无用量数据", account)
 	}
-	entry := fmt.Sprintf("- %s：%s", account, strings.Join(periods, "，"))
-	if len(resets) > 0 {
-		entry += "\n  - 重置：" + strings.Join(resets, "，")
-	}
-	return entry
-}
-
-func (renderer *Renderer) verboseAccountEntry(usage model.AccountUsage, generatedAt time.Time) string {
-	if usage.Error != "" {
-		return renderer.accountEntry(usage, generatedAt)
-	}
-
-	details := make([]string, 0, len(model.CanonicalLevels)+1)
-	for _, level := range model.CanonicalLevels {
-		period, exists := usage.Period(level)
-		if !exists {
-			continue
-		}
-		reset := "重置时间未知"
-		if period.ResetAt != nil {
-			reset = "重置于 " + renderer.formatResetTime(*period.ResetAt, generatedAt)
-		}
-		details = append(details, fmt.Sprintf("  - %s：%s，%s", periodLabels[level], renderer.formatPercent(period.Percent), reset))
-	}
-	if len(details) == 0 {
-		return renderer.accountEntry(usage, generatedAt)
-	}
-	if usage.UpdatedAt != nil {
-		details = append(details, "  - 数据更新时间："+usage.UpdatedAt.In(renderer.location).Format(detailTimeLayout))
-	}
-	name := escapeInlineText(truncateUTF8(usage.Account, 120))
-	return "- **" + name + "**\n" + strings.Join(details, "\n")
+	return fmt.Sprintf("- %s：%s", account, strings.Join(periods, "，"))
 }
 
 func (renderer *Renderer) formatPercent(percent float64) string {
@@ -258,19 +221,11 @@ func (renderer *Renderer) formatPercent(percent float64) string {
 	return percentage
 }
 
-func (renderer *Renderer) formatResetTime(resetAt, generatedAt time.Time) string {
-	relative := "已重置"
-	if remaining := resetAt.Sub(generatedAt); remaining > 0 {
-		relative = formatRemainingTime(remaining) + "后"
-	}
-	return resetAt.In(renderer.location).Format(detailTimeLayout) + "（" + relative + "）"
-}
-
 func formatRemainingTime(remaining time.Duration) string {
 	if remaining <= 0 {
 		return "已重置"
 	}
-	// 向上取整到分钟，避免尚有数秒时显示为 00 分钟。
+	// 向上取整到分钟，避免尚有数秒时显示为 0m。
 	totalMinutes := int64((remaining + time.Minute - 1) / time.Minute)
 	days := totalMinutes / (24 * 60)
 	hours := totalMinutes % (24 * 60) / 60
@@ -278,11 +233,11 @@ func formatRemainingTime(remaining time.Duration) string {
 
 	switch {
 	case days > 0:
-		return fmt.Sprintf("%d天%02d时%02d分钟", days, hours, minutes)
+		return fmt.Sprintf("%dd %dh %dm", days, hours, minutes)
 	case hours > 0:
-		return fmt.Sprintf("%02d时%02d分钟", hours, minutes)
+		return fmt.Sprintf("%dh %dm", hours, minutes)
 	default:
-		return fmt.Sprintf("%d分钟", minutes)
+		return fmt.Sprintf("%dm", minutes)
 	}
 }
 
