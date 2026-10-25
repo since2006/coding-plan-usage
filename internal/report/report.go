@@ -14,6 +14,7 @@ import (
 const (
 	weComMarkdownLimit = 4096
 	chunkSafetyLimit   = 3900
+	detailTimeLayout   = "2006-01-02 15:04:05"
 )
 
 var periodLabels = map[string]string{
@@ -47,6 +48,17 @@ func NewRenderer(location *time.Location, threshold float64) *Renderer {
 func (renderer *Renderer) Render(kind Kind, usages []model.AccountUsage, generatedAt time.Time) []string {
 	sorted := renderer.sortUsages(usages)
 	return renderer.renderSections(kind, []section{{entries: renderer.accountEntries(sorted, generatedAt)}}, generatedAt)
+}
+
+// RenderVerbose keeps the ordering of Render, but lists every period on its own
+// line with the absolute reset time regardless of the alert threshold.
+func (renderer *Renderer) RenderVerbose(kind Kind, usages []model.AccountUsage, generatedAt time.Time) []string {
+	sorted := renderer.sortUsages(usages)
+	entries := make([]string, 0, len(sorted))
+	for _, usage := range sorted {
+		entries = append(entries, renderer.verboseAccountEntry(usage, generatedAt))
+	}
+	return renderer.renderSections(kind, []section{{entries: entries}}, generatedAt)
 }
 
 // RenderAlert separates the accounts that triggered this notification from the
@@ -194,12 +206,8 @@ func (renderer *Renderer) accountEntry(usage model.AccountUsage, generatedAt tim
 		if !exists {
 			continue
 		}
-		percentage := fmt.Sprintf("%.1f%%", period.Percent)
-		if period.Percent > renderer.threshold {
-			percentage = "**" + percentage + "**"
-		}
 		label := periodLabels[level]
-		periodSummary := label + " " + percentage
+		periodSummary := label + " " + renderer.formatPercent(period.Percent)
 		if period.Percent > renderer.threshold && period.ResetAt != nil {
 			resets = append(resets, label+"（"+formatRemainingTime(period.ResetAt.Sub(generatedAt))+"）")
 		}
@@ -213,6 +221,49 @@ func (renderer *Renderer) accountEntry(usage model.AccountUsage, generatedAt tim
 		entry += "\n  - 重置：" + strings.Join(resets, "，")
 	}
 	return entry
+}
+
+func (renderer *Renderer) verboseAccountEntry(usage model.AccountUsage, generatedAt time.Time) string {
+	if usage.Error != "" {
+		return renderer.accountEntry(usage, generatedAt)
+	}
+
+	details := make([]string, 0, len(model.CanonicalLevels)+1)
+	for _, level := range model.CanonicalLevels {
+		period, exists := usage.Period(level)
+		if !exists {
+			continue
+		}
+		reset := "重置时间未知"
+		if period.ResetAt != nil {
+			reset = "重置于 " + renderer.formatResetTime(*period.ResetAt, generatedAt)
+		}
+		details = append(details, fmt.Sprintf("  - %s：%s，%s", periodLabels[level], renderer.formatPercent(period.Percent), reset))
+	}
+	if len(details) == 0 {
+		return renderer.accountEntry(usage, generatedAt)
+	}
+	if usage.UpdatedAt != nil {
+		details = append(details, "  - 数据更新时间："+usage.UpdatedAt.In(renderer.location).Format(detailTimeLayout))
+	}
+	name := escapeInlineText(truncateUTF8(usage.Account, 120))
+	return "- **" + name + "**\n" + strings.Join(details, "\n")
+}
+
+func (renderer *Renderer) formatPercent(percent float64) string {
+	percentage := fmt.Sprintf("%.1f%%", percent)
+	if percent > renderer.threshold {
+		return "**" + percentage + "**"
+	}
+	return percentage
+}
+
+func (renderer *Renderer) formatResetTime(resetAt, generatedAt time.Time) string {
+	relative := "已重置"
+	if remaining := resetAt.Sub(generatedAt); remaining > 0 {
+		relative = formatRemainingTime(remaining) + "后"
+	}
+	return resetAt.In(renderer.location).Format(detailTimeLayout) + "（" + relative + "）"
 }
 
 func formatRemainingTime(remaining time.Duration) string {

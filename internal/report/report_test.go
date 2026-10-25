@@ -216,6 +216,49 @@ func TestRenderSplitsLargeReportAtAccountBoundaries(t *testing.T) {
 	}
 }
 
+func TestRenderVerboseListsEveryPeriodWithResetTime(t *testing.T) {
+	location, _ := time.LoadLocation("Asia/Shanghai")
+	renderer := NewRenderer(location, 90)
+	generatedAt := time.Date(2026, 9, 1, 12, 0, 0, 0, location)
+	sessionReset := generatedAt.Add(80 * time.Minute)
+	weeklyReset := time.Date(2026, 9, 7, 0, 0, 0, 0, location)
+	expiredReset := generatedAt.Add(-time.Minute)
+	updatedAt := generatedAt.Add(-5 * time.Minute)
+	usages := []model.AccountUsage{
+		{
+			Account:   "account-a",
+			UpdatedAt: &updatedAt,
+			Periods: []model.Period{
+				{Level: model.LevelMonthly, Percent: 10},
+				{Level: model.LevelSession, Percent: 92, ResetAt: &sessionReset},
+				{Level: model.LevelWeekly, Percent: 40, ResetAt: &weeklyReset},
+			},
+		},
+		{Account: "expired", Periods: []model.Period{{Level: model.LevelSession, Percent: 0, ResetAt: &expiredReset}}},
+		{Account: "empty"},
+		{Account: "failed", Error: "AccessDenied"},
+	}
+
+	messages := renderer.RenderVerbose(KindOnce, usages, generatedAt)
+	if len(messages) != 1 {
+		t.Fatalf("message count = %d", len(messages))
+	}
+	want := "# Coding Plan 用量汇总\n" +
+		"> 统计时间：2026-09-01 12:00:00 CST\n\n" +
+		"- **account-a**\n" +
+		"  - 5 小时：**92.0%**，重置于 2026-09-01 13:20:00（01时20分钟后）\n" +
+		"  - 周：40.0%，重置于 2026-09-07 00:00:00（5天12时00分钟后）\n" +
+		"  - 月：10.0%，重置时间未知\n" +
+		"  - 数据更新时间：2026-09-01 11:55:00\n" +
+		"- **expired**\n" +
+		"  - 5 小时：0.0%，重置于 2026-09-01 11:59:00（已重置）\n" +
+		"- **empty**：暂无用量数据\n" +
+		"- ❌ **failed**：查询失败（AccessDenied）"
+	if messages[0] != want {
+		t.Fatalf("verbose message =\n%s\nwant\n%s", messages[0], want)
+	}
+}
+
 func TestRenderEscapesMarkdownAndFlattensNewlines(t *testing.T) {
 	renderer := NewRenderer(time.UTC, 90)
 	message := renderer.Render(KindOnce, []model.AccountUsage{{

@@ -69,6 +69,8 @@ const (
 	ModePoll   ExecuteMode = "poll"
 	ModeOnce   ExecuteMode = "once"
 	ModeDryRun ExecuteMode = "dry-run"
+	// ModeDryRunVerbose behaves like ModeDryRun but renders the detailed report.
+	ModeDryRunVerbose ExecuteMode = "dry-run-verbose"
 )
 
 type Outcome struct {
@@ -136,9 +138,13 @@ func (runner *Runner) Execute(ctx context.Context, mode ExecuteMode) (Outcome, e
 		}
 	}
 
-	if mode == ModeDryRun {
+	if mode == ModeDryRun || mode == ModeDryRunVerbose {
 		outcome.Kind = report.KindOnce
-		outcome.Messages = runner.renderer.Render(report.KindOnce, usages, now)
+		if mode == ModeDryRunVerbose {
+			outcome.Messages = runner.renderer.RenderVerbose(report.KindOnce, usages, now)
+		} else {
+			outcome.Messages = runner.renderer.Render(report.KindOnce, usages, now)
+		}
 		return outcome, nil
 	}
 

@@ -287,9 +287,13 @@ func (runtime *applicationRuntime) newWeComBotServer() (*wecom.BotHandler, *http
 	if !bot.Enabled() {
 		return nil, nil, nil
 	}
-	query := func(ctx context.Context) (string, error) {
+	query := func(ctx context.Context, verbose bool) (string, error) {
 		runtime.status.RecordActiveQuery()
-		outcome, err := runtime.runner.Execute(ctx, app.ModeDryRun)
+		mode := app.ModeDryRun
+		if verbose {
+			mode = app.ModeDryRunVerbose
+		}
+		outcome, err := runtime.runner.Execute(ctx, mode)
 		if err != nil {
 			return "", err
 		}
@@ -299,7 +303,10 @@ func (runtime *applicationRuntime) newWeComBotServer() (*wecom.BotHandler, *http
 	if err != nil {
 		return nil, nil, err
 	}
-	handler, err := wecom.NewBotHandler(bot.Token, bot.EncodingAESKey, query, nil, runtime.logger)
+	botQuery := func(ctx context.Context) (string, error) {
+		return query(ctx, false)
+	}
+	handler, err := wecom.NewBotHandler(bot.Token, bot.EncodingAESKey, botQuery, nil, runtime.logger)
 	if err != nil {
 		return nil, nil, err
 	}

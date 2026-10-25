@@ -13,10 +13,13 @@ import (
 
 func TestHandlerReturnsHTMLUsagePageByDefault(t *testing.T) {
 	queryCalls := 0
-	handler, err := NewHandler(func(ctx context.Context) (string, error) {
+	handler, err := NewHandler(func(ctx context.Context, verbose bool) (string, error) {
 		queryCalls++
 		if ctx == nil {
 			t.Fatal("query context is nil")
+		}
+		if verbose {
+			t.Fatal("verbose must default to false")
 		}
 		return "# Coding Plan 用量汇总\n> 统计时间：2026-09-01 12:00:00 CST\n\n- **account-a**：5 小时 25.0%", nil
 	}, nil)
@@ -46,6 +49,7 @@ func TestHandlerReturnsHTMLUsagePageByDefault(t *testing.T) {
 		"<blockquote>",
 		"<strong>account-a</strong>",
 		`href="/usage?format=markdown"`,
+		`href="/usage?verbose=1"`,
 	} {
 		if !strings.Contains(body, want) {
 			t.Fatalf("body does not contain %q:\n%s", want, body)
@@ -57,7 +61,7 @@ func TestHandlerReturnsHTMLUsagePageByDefault(t *testing.T) {
 }
 
 func TestHandlerReturnsRawMarkdownOnRequest(t *testing.T) {
-	handler, err := NewHandler(func(context.Context) (string, error) {
+	handler, err := NewHandler(func(context.Context, bool) (string, error) {
 		return "# Coding Plan 用量汇总\n- **account-a**：5 小时 25.0%", nil
 	}, nil)
 	if err != nil {
@@ -78,8 +82,66 @@ func TestHandlerReturnsRawMarkdownOnRequest(t *testing.T) {
 	}
 }
 
+func TestHandlerPassesVerboseToQueryAndKeepsItInLinks(t *testing.T) {
+	for _, target := range []string{"?verbose", "?verbose=1", "?verbose=true"} {
+		t.Run(target, func(t *testing.T) {
+			var gotVerbose bool
+			handler, err := NewHandler(func(_ context.Context, verbose bool) (string, error) {
+				gotVerbose = verbose
+				return "# Coding Plan 用量汇总\n- **account-a**\n  - 5 小时：25.0%，重置于 2026-09-01 17:00:00（05时00分钟后）", nil
+			}, nil)
+			if err != nil {
+				t.Fatal(err)
+			}
+
+			response := httptest.NewRecorder()
+			handler.ServeHTTP(response, httptest.NewRequest(http.MethodGet, Path+target, nil))
+
+			if response.Code != http.StatusOK {
+				t.Fatalf("status = %d, body = %q", response.Code, response.Body.String())
+			}
+			if !gotVerbose {
+				t.Fatal("verbose was not passed to query")
+			}
+			body := response.Body.String()
+			for _, want := range []string{
+				"重置于 2026-09-01 17:00:00",
+				`href="/usage?verbose=1">刷新`,
+				`href="/usage">简洁视图`,
+				`href="/usage?format=markdown&amp;verbose=1"`,
+			} {
+				if !strings.Contains(body, want) {
+					t.Fatalf("body does not contain %q:\n%s", want, body)
+				}
+			}
+		})
+	}
+}
+
+func TestHandlerReturnsVerboseMarkdownOnRequest(t *testing.T) {
+	handler, err := NewHandler(func(_ context.Context, verbose bool) (string, error) {
+		if !verbose {
+			t.Fatal("verbose was not passed to query")
+		}
+		return "# Coding Plan 用量汇总\n- **account-a**", nil
+	}, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	response := httptest.NewRecorder()
+	handler.ServeHTTP(response, httptest.NewRequest(http.MethodGet, Path+"?format=markdown&verbose=1", nil))
+
+	if response.Code != http.StatusOK {
+		t.Fatalf("status = %d, body = %q", response.Code, response.Body.String())
+	}
+	if got, want := response.Body.String(), "# Coding Plan 用量汇总\n- **account-a**\n"; got != want {
+		t.Fatalf("body = %q, want %q", got, want)
+	}
+}
+
 func TestHandlerDoesNotRenderUnsafeMarkdown(t *testing.T) {
-	handler, err := NewHandler(func(context.Context) (string, error) {
+	handler, err := NewHandler(func(context.Context, bool) (string, error) {
 		return "# Safe\n<script>alert(1)</script>\n[unsafe](javascript:alert(1))", nil
 	}, nil)
 	if err != nil {
@@ -97,7 +159,7 @@ func TestHandlerDoesNotRenderUnsafeMarkdown(t *testing.T) {
 
 func TestHandlerRejectsUnsupportedMethodAndFormatWithoutQuerying(t *testing.T) {
 	queryCalls := 0
-	handler, err := NewHandler(func(context.Context) (string, error) {
+	handler, err := NewHandler(func(context.Context, bool) (string, error) {
 		queryCalls++
 		return "unused", nil
 	}, nil)
@@ -116,13 +178,19 @@ func TestHandlerRejectsUnsupportedMethodAndFormatWithoutQuerying(t *testing.T) {
 	if response.Code != http.StatusBadRequest {
 		t.Fatalf("invalid format status = %d", response.Code)
 	}
+
+	response = httptest.NewRecorder()
+	handler.ServeHTTP(response, httptest.NewRequest(http.MethodGet, Path+"?verbose=yes", nil))
+	if response.Code != http.StatusBadRequest {
+		t.Fatalf("invalid verbose status = %d", response.Code)
+	}
 	if queryCalls != 0 {
 		t.Fatalf("query calls = %d, want 0", queryCalls)
 	}
 }
 
 func TestHandlerReturnsBadGatewayWithoutLeakingQueryError(t *testing.T) {
-	handler, err := NewHandler(func(context.Context) (string, error) {
+	handler, err := NewHandler(func(context.Context, bool) (string, error) {
 		return "", errors.New("upstream secret details")
 	}, slog.New(slog.NewTextHandler(io.Discard, nil)))
 	if err != nil {

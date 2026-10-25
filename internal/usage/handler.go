@@ -7,6 +7,8 @@ import (
 	"html/template"
 	"log/slog"
 	"net/http"
+	"net/url"
+	"strconv"
 	"strings"
 	"time"
 
@@ -101,8 +103,15 @@ const pageTemplate = `<!doctype html>
 <body>
   <main>
     <nav aria-label="页面操作">
+      {{- if .Verbose}}
+      <a href="/usage?verbose=1">刷新</a>
+      <a href="/usage">简洁视图</a>
+      <a href="/usage?format=markdown&amp;verbose=1">查看 Markdown</a>
+      {{- else}}
       <a href="/usage">刷新</a>
+      <a href="/usage?verbose=1">查看详情</a>
       <a href="/usage?format=markdown">查看 Markdown</a>
+      {{- end}}
     </nav>
     <article>{{.Content}}</article>
   </main>
@@ -112,7 +121,9 @@ const pageTemplate = `<!doctype html>
 
 var parsedPageTemplate = template.Must(template.New("usage").Parse(pageTemplate))
 
-type Query func(ctx context.Context) (string, error)
+// Query returns the usage report as Markdown; verbose requests the detailed
+// report with reset times for every period.
+type Query func(ctx context.Context, verbose bool) (string, error)
 
 type Handler struct {
 	query  Query
@@ -121,6 +132,7 @@ type Handler struct {
 
 type templateData struct {
 	Content template.HTML
+	Verbose bool
 }
 
 func NewHandler(query Query, logger *slog.Logger) (*Handler, error) {
@@ -141,15 +153,21 @@ func (handler *Handler) ServeHTTP(writer http.ResponseWriter, request *http.Requ
 		return
 	}
 
-	format := request.URL.Query().Get("format")
+	parameters := request.URL.Query()
+	format := parameters.Get("format")
 	if format != "" && format != "html" && format != "markdown" {
 		http.Error(writer, "format must be html or markdown", http.StatusBadRequest)
+		return
+	}
+	verbose, err := parseVerbose(parameters)
+	if err != nil {
+		http.Error(writer, "verbose must be true or false", http.StatusBadRequest)
 		return
 	}
 
 	ctx, cancel := context.WithTimeout(request.Context(), queryTimeout)
 	defer cancel()
-	content, err := handler.query(ctx)
+	content, err := handler.query(ctx, verbose)
 	if err != nil {
 		handler.logger.Error("HTTP 用量查询失败", "error", err)
 		http.Error(writer, "failed to query usage", http.StatusBadGateway)
@@ -167,7 +185,7 @@ func (handler *Handler) ServeHTTP(writer http.ResponseWriter, request *http.Requ
 		return
 	}
 
-	page, err := renderHTML(content)
+	page, err := renderHTML(content, verbose)
 	if err != nil {
 		handler.logger.Error("渲染 HTTP 用量页面失败", "error", err)
 		http.Error(writer, "failed to render usage", http.StatusInternalServerError)
@@ -178,13 +196,26 @@ func (handler *Handler) ServeHTTP(writer http.ResponseWriter, request *http.Requ
 	_, _ = writer.Write(page)
 }
 
-func renderHTML(markdown string) ([]byte, error) {
+// parseVerbose treats a bare "verbose" parameter as enabled so that
+// /usage?verbose works without an explicit value.
+func parseVerbose(parameters url.Values) (bool, error) {
+	if !parameters.Has("verbose") {
+		return false, nil
+	}
+	value := parameters.Get("verbose")
+	if value == "" {
+		return true, nil
+	}
+	return strconv.ParseBool(value)
+}
+
+func renderHTML(markdown string, verbose bool) ([]byte, error) {
 	var content bytes.Buffer
 	if err := goldmark.New().Convert([]byte(markdown), &content); err != nil {
 		return nil, err
 	}
 	var page bytes.Buffer
-	if err := parsedPageTemplate.Execute(&page, templateData{Content: template.HTML(content.String())}); err != nil {
+	if err := parsedPageTemplate.Execute(&page, templateData{Content: template.HTML(content.String()), Verbose: verbose}); err != nil {
 		return nil, err
 	}
 	return page.Bytes(), nil

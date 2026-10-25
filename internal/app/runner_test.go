@@ -296,6 +296,29 @@ func TestRunnerDryRunDoesNotSendOrSave(t *testing.T) {
 	}
 }
 
+func TestRunnerVerboseDryRunRendersResetTimesWithoutSendingOrSaving(t *testing.T) {
+	location := time.UTC
+	now := time.Date(2026, 8, 24, 12, 0, 0, 0, location)
+	resetAt := now.Add(90 * time.Minute)
+	collector := &fakeCollector{usages: []model.AccountUsage{{
+		Account: "a",
+		Periods: []model.Period{{Level: model.LevelSession, Percent: 20, ResetAt: &resetAt}},
+	}}}
+	sender := &fakeSender{}
+	store := &memoryStore{value: persist.New()}
+	runner := newTestRunner(t, location, &now, collector, sender, store)
+	outcome, err := runner.Execute(context.Background(), ModeDryRunVerbose)
+	if err != nil || len(outcome.Messages) != 1 {
+		t.Fatalf("outcome = %+v, err = %v", outcome, err)
+	}
+	if want := "  - 5 小时：20.0%，重置于 2026-08-24 13:30:00（01时30分钟后）"; !strings.Contains(outcome.Messages[0], want) {
+		t.Fatalf("verbose message does not contain %q:\n%s", want, outcome.Messages[0])
+	}
+	if sender.calls != 0 || store.saves != 0 {
+		t.Fatalf("sender calls = %d, saves = %d", sender.calls, store.saves)
+	}
+}
+
 func TestDailyDue(t *testing.T) {
 	location, _ := time.LoadLocation("Asia/Shanghai")
 	dailyTimes := []DailyTime{{Hour: 9}, {Hour: 18}}

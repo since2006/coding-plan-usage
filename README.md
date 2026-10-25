@@ -81,7 +81,7 @@ GET /usage
 
 状态页复用 `wecom.bot.listen_address`，返回便于查看和采集的纯文本：`alerts_today` 是当天成功发出的阈值预警批次数，`active_queries_today` 是去重后实际启动的主动查询次数。“当天”按 `schedule.timezone` 计算并在跨日后自动归零。统计只保存在进程内存中，因此服务重启后会从 0 开始；它适合运行状态观测，不作为审计数据。
 
-`GET /usage` 会实时查询各账号并返回适配桌面端、移动端和系统深浅色模式的 HTML 用量汇总；`GET /usage?format=markdown` 可获取原始 Markdown。查询不发送群通知，也不修改预警去重状态；每次有效调用会计入 `active_queries_today`。生产环境建议只允许内网或受信任且具有访问控制的反向代理访问 `/status` 和 `/usage`，尤其不要将包含账号名称与用量的 `/usage` 直接暴露到公网。
+`GET /usage` 会实时查询各账号并返回适配桌面端、移动端和系统深浅色模式的 HTML 用量汇总；`GET /usage?format=markdown` 可获取原始 Markdown。追加 `verbose=1`（也接受 `true`，或只写 `?verbose`）会切换为详情视图：每个账号的 5 小时、周、月窗口分行展示，并列出各窗口的具体重置时间与剩余时长（不受预警阈值限制）以及平台返回的数据更新时间，例如 `GET /usage?verbose=1` 或 `GET /usage?format=markdown&verbose=1`。查询不发送群通知，也不修改预警去重状态；每次有效调用会计入 `active_queries_today`。生产环境建议只允许内网或受信任且具有访问控制的反向代理访问 `/status` 和 `/usage`，尤其不要将包含账号名称与用量的 `/usage` 直接暴露到公网。
 
 `schedule.daily_at` 必须是 `"HH:MM"` 时刻列表，使用 24 小时制；列表不能为空，时刻不能重复。
 

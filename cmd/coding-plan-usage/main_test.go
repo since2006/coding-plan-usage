@@ -99,6 +99,18 @@ func TestWeComBotServerExposesUsagePage(t *testing.T) {
 	if got := counter.Snapshot().ActiveQueries; got != 1 {
 		t.Fatalf("active queries = %d, want 1", got)
 	}
+
+	response = httptest.NewRecorder()
+	server.Handler.ServeHTTP(response, httptest.NewRequest(http.MethodGet, usagepage.Path+"?format=markdown&verbose=1", nil))
+	if response.Code != http.StatusOK {
+		t.Fatalf("verbose status = %d, body = %q", response.Code, response.Body.String())
+	}
+	if body := response.Body.String(); !strings.Contains(body, "- **account-a**\n  - 5 小时：25.0%，重置时间未知") {
+		t.Fatalf("verbose usage body = %q", body)
+	}
+	if got := counter.Snapshot().ActiveQueries; got != 2 {
+		t.Fatalf("active queries = %d, want 2", got)
+	}
 }
 
 type staticCollector struct {
